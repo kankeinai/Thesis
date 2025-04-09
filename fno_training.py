@@ -143,7 +143,7 @@ def train(model, dataloader, optimizer, scheduler, num_epochs=1000, plot=True):
               f'Time: {datetime.now().time()}')
 
         # Save model checkpoint
-        if (epoch + 1) % 10 == 0:
+        if (epoch + 1) % 1 == 0:
             timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
             model_filename = f'epochs_[{epoch+1}]_model_time_[{timestamp}]_loss_[{avg_loss.item():.4f}].pth'
             torch.save(model.state_dict(), f"trained_models/fno/{model_filename}")
