@@ -18,7 +18,7 @@ class PR(nn.Module):
         super(PR, self).__init__()
 
         self.modes1 = modes1
-        self.scale = (1 / (in_channels*out_channels))
+        self.scale = (1 / (in_channels * out_channels))
         self.weights_pole = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, dtype=torch.cfloat))
         self.weights_residue = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, dtype=torch.cfloat))
    
@@ -33,6 +33,7 @@ class PR(nn.Module):
     
 
     def forward(self, x):
+
         t=grid_x_train.cuda()
         #Compute input poles and resudes by FFT
         dt=(t[1]-t[0]).item()
@@ -57,7 +58,7 @@ class PR(nn.Module):
         return x1+x2
 
 class LNO1d(nn.Module):
-    def __init__(self, width,modes):
+    def __init__(self, width, modes, hidden_layer=256):
         super(LNO1d, self).__init__()
 
         self.width = width
@@ -67,14 +68,15 @@ class LNO1d(nn.Module):
         self.conv0 = PR(self.width, self.width, self.modes1)
         self.w0 = nn.Conv1d(self.width, self.width, 1)
 
-        self.fc1 = nn.Linear(self.width, 128)
-        self.fc2 = nn.Linear(128, 1)
+        self.fc1 = nn.Linear(self.width, hidden_layer)
+        self.fc2 = nn.Linear(hidden_layer, 1)
 
     def forward(self,x):
         grid = self.get_grid(x.shape, x.device)
         x = torch.cat((x, grid), dim=-1)
         x = self.fc0(x)
         x = x.permute(0, 2, 1)
+        x = torch.sin(x)
 
         x1 = self.conv0(x)
         x2 = self.w0(x)
@@ -92,6 +94,21 @@ class LNO1d(nn.Module):
         gridx = gridx.reshape(1, size_x, 1).repeat([batchsize, 1, 1])
         return gridx.to(device)
     
+def compute_loss(model, u, t):
+    
+    x = model(u)
+
+    dt = (t[1]-t[0]).item()
+
+    dx_dt = (x[:, 1:, :] - x[:, :-1, :]) / dt  # crude finite diff
+    residual = dx_dt + x[:, :-1, :] - u[:, :-1, :]
+
+    physics_loss = torch.mean(residual ** 2)
+
+    x0 = x[:, 0, :]
+    initial_loss = torch.mean((x0 - 1.0)**2)
+
+    return physics_loss, initial_loss
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -118,14 +135,13 @@ dataset = MultiFunctionDatasetODE(
 
 dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=custom_collate_ODE_fn, shuffle=True)
 
-
 learning_rate = 0.001
 epochs = 100
 step_size = 100
 gamma = 0.9
 
-modes = 16
-width = 64
+modes = 32
+width = 4
 
 # model
 model = LNO1d(width,modes).cuda()
@@ -137,28 +153,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
 start_time = time.time()
 
-
-def compute_loss(model, u, t):
-    
-    x = model(u)
-
-    dt = dt=(t[1]-t[0]).item()
-
-    dx_dt = (x[:, 1:, :] - x[:, :-1, :]) / dt  # crude finite diff
-    residual = dx_dt + x[:, :-1, :] - u[:, :-1, :]
-
-    physics_loss = torch.mean(residual ** 2)
-
-    x0 = x[:, 0, :]
-    initial_loss = torch.mean((x0 - 1.0)**2)
-
-    return physics_loss, initial_loss
-
 timestop = 0
-
-# Model setup
-model = LNO1d(width, modes)
-model.to(device)
 
 for ep in range(timestop, epochs):
     model.train()
@@ -174,10 +169,10 @@ for ep in range(timestop, epochs):
         loss = physics_loss + initial_loss
         loss.backward()
         optimizer.step()
+        print(f"Epoch: {ep}, Physics loss: {physics_loss}, Initial loss: {initial_loss}")
         epoch_loss += loss.item()
         n_batches += 1
 
-    
     epoch_loss /= n_batches
     # Save model checkpoint
     if (ep + 1) % 10 == 0:

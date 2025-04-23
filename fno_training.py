@@ -3,17 +3,10 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.fft import fft, ifft
-from functools import reduce, partial
 from datetime import datetime
-import operator
 from data_fno import MultiFunctionDatasetODE, custom_collate_ODE_fn
 import os
 
-
-# -------------------------
-# Spectral Convolution Layer
-# -------------------------
 class SpectralConv1d(nn.Module):
     def __init__(self, in_channels, out_channels, modes1):
         super(SpectralConv1d, self).__init__()
@@ -28,16 +21,12 @@ class SpectralConv1d(nn.Module):
 
     def forward(self, x):
         B, C, N = x.shape
-        x_ft = torch.fft.rfft(x, dim=-1)  # shape [B, C, N//2 + 1]
+        x_ft = torch.fft.rfft(x, dim=-1) 
         out_ft = torch.zeros(B, self.out_channels, x_ft.size(-1), dtype=torch.cfloat, device=x.device)
         out_ft[:, :, :self.modes1] = self.compl_mul1d(x_ft[:, :, :self.modes1], self.weights1)
-        x = torch.fft.irfft(out_ft, n=N, dim=-1)  # Return to physical space
+        x = torch.fft.irfft(out_ft, n=N, dim=-1)  
         return x
 
-
-# -------------------------
-# Simple Block with GELU
-# -------------------------
 class SimpleBlock1d(nn.Module):
     def __init__(self, modes, width):
         super(SimpleBlock1d, self).__init__()
@@ -72,9 +61,6 @@ class SimpleBlock1d(nn.Module):
         x = self.fc2(x)
         return x
 
-# -------------------------
-# Wrapper Model
-# -------------------------
 class Net1d(nn.Module):
     def __init__(self, modes, width):
         super(Net1d, self).__init__()
@@ -87,9 +73,6 @@ class Net1d(nn.Module):
     def count_params(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-# -------------------------
-# Physics-Informed Loss Function
-# -------------------------
 def compute_loss(model, u, t, dt=1/200, lambda_phys=1.0, lambda_init=10.0):
     x = model(u, t)
     dx_dt = (x[:, 1:, :] - x[:, :-1, :]) / dt
@@ -98,9 +81,6 @@ def compute_loss(model, u, t, dt=1/200, lambda_phys=1.0, lambda_init=10.0):
     initial_loss = torch.mean((x[:, 0, :] - 1.0) ** 2)
     return lambda_phys * physics_loss + lambda_init * initial_loss
 
-# -------------------------
-# Training Function
-# -------------------------
 def train(model, dataloader, optimizer, scheduler, t_grid, num_epochs=1000):
     for epoch in range(num_epochs):
         total_loss = 0
