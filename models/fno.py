@@ -3,6 +3,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class SpectralConv1d(nn.Module):
+    """
+    One-dimensional spectral convolution layer using Fourier transforms.
+
+    This layer transforms the input to the frequency domain, applies
+    learnable complex weights on a fixed number of low-frequency modes,
+    and transforms back to real space.
+
+    Parameters
+    ----------
+    in_channels : int
+        Number of input feature channels.
+    out_channels : int
+        Number of output feature channels.
+    modes1 : int
+        Number of lowest Fourier modes to retain (higher modes are zeroed).
+    """
     def __init__(self, in_channels, out_channels, modes1):
         super(SpectralConv1d, self).__init__()
         self.in_channels = in_channels
@@ -23,6 +39,17 @@ class SpectralConv1d(nn.Module):
         return x
 
 class SimpleBlock1d(nn.Module):
+    """
+    A single Fourier Neural Operator (FNO) block in 1D, combining spectral convolutions
+    with local 1×1 convolutions and pointwise MLP projections.
+
+    Parameters
+    ----------
+    modes : int
+        Number of low-frequency Fourier modes to retain in each spectral convolution.
+    width : int
+        Hidden channel dimension for feature processing.
+    """
     def __init__(self, modes, width):
         super(SimpleBlock1d, self).__init__()
         self.modes1 = modes
@@ -57,6 +84,19 @@ class SimpleBlock1d(nn.Module):
         return x
 
 class FNO1d(nn.Module):
+    """
+    Wrapper module for a 1D Fourier Neural Operator (FNO).
+
+    This class encapsulates a single SimpleBlock1d, exposing a streamlined
+    interface for mapping an input field and auxiliary features to an output field.
+
+    Parameters
+    ----------
+    modes : int
+        Number of low-frequency Fourier modes to retain in each spectral convolution.
+    width : int
+        Hidden feature dimension inside the spectral blocks.
+    """
     def __init__(self, modes, width):
         super(FNO1d, self).__init__()
         self.conv1 = SimpleBlock1d(modes, width)

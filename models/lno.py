@@ -3,7 +3,25 @@ import torch.nn as nn
 import numpy as np
 
 class PR(nn.Module):
+    """
+    Pole-Residue layer for frequency-domain response modeling.
+
+    Learns complex poles and residues to decompose the system response
+    into transient and steady-state parts via rational approximation.
+    """
     def __init__(self, in_channels, out_channels, modes1):
+        """
+        Initialize the PR block.
+
+        Parameters
+        ----------
+        in_channels : int
+            Number of input feature channels.
+        out_channels : int
+            Number of output feature channels.
+        modes1 : int
+            Number of frequency modes (poles/residues) to learn.
+        """
         super(PR, self).__init__()
 
         self.modes1 = modes1
@@ -12,6 +30,28 @@ class PR(nn.Module):
         self.weights_residue = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, dtype=torch.cfloat))
    
     def output_PR(self, lambda1,alpha, weights_pole, weights_residue):   
+        """
+        Compute transient (output_residue1) and steady-state (output_residue2)
+        frequency-domain contributions using the pole-residue formulation.
+
+        Parameters
+        ----------
+        lambda1 : torch.Tensor
+            Complex frequency tensor of shape (N, 1, 1, 1).
+        alpha : torch.Tensor
+            FFT of the input signal, shape (batch, in_channels, N).
+        weights_pole : torch.Tensor
+            Learned pole positions, shape (in_channels, out_channels, modes1).
+        weights_residue : torch.Tensor
+            Learned residues, shape (in_channels, out_channels, modes1).
+
+        Returns
+        -------
+        output_residue1 : torch.Tensor
+            Transient response contribution, shape (batch, out_channels, N).
+        output_residue2 : torch.Tensor
+            Steady-state contribution, shape (batch, out_channels, modes1).
+        """
         Hw=torch.zeros(weights_residue.shape[0],weights_residue.shape[0],weights_residue.shape[2],lambda1.shape[0], device=alpha.device, dtype=torch.cfloat)
         term1=torch.div(1,torch.sub(lambda1,weights_pole))
         Hw=weights_residue*term1
@@ -21,6 +61,22 @@ class PR(nn.Module):
         return output_residue1,output_residue2    
     
     def forward(self, x, t):
+        """
+        Forward pass: compute time-domain signal response by
+        combining transient (IFFT) and steady-state (exponential) parts.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input signal, shape (batch, in_channels, N).
+        t : torch.Tensor
+            Time grid, shape (N,) or (batch, N).
+
+        Returns
+        -------
+        torch.Tensor
+            Output signal, shape (batch, out_channels, N).
+        """
 
         dt=(t[1]-t[0]).item()
         alpha = torch.fft.fft(x)
@@ -43,7 +99,23 @@ class PR(nn.Module):
         return x1+x2
 
 class LNO1d(nn.Module):
+    """
+    One-dimensional Lagrangian Neural Operator (LNO) combining
+    local MLP lift, frequency-domain PR block, and pointwise conv.
+    """
     def __init__(self, width, modes, hidden_layer=256):
+        """
+        Initialize the LNO1d model.
+
+        Parameters
+        ----------
+        width : int
+            Hidden feature dimension after input lifting.
+        modes : int
+            Number of frequency modes for the PR block.
+        hidden_layer : int, optional
+            Size of the hidden layer in the final MLP.
+        """
         super(LNO1d, self).__init__()
 
         self.width = width
@@ -57,6 +129,21 @@ class LNO1d(nn.Module):
         self.fc2 = nn.Linear(hidden_layer, 1)
 
     def forward(self, x, t):
+        """
+        Forward pass of the LNO1d.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input field, shape (batch, N).
+        t : torch.Tensor
+            Time grid, shape (N,) or (batch, N).
+
+        Returns
+        -------
+        torch.Tensor
+            Predicted field, shape (batch, N, 1).
+        """
         grid = self.get_grid(x.shape, x.device)
         x = torch.cat((x, grid), dim=-1)
         x = self.fc0(x)
@@ -74,6 +161,21 @@ class LNO1d(nn.Module):
         return x
 
     def get_grid(self, shape, device):
+        """
+        Generate a normalized spatial grid in [0,1] for each batch.
+
+        Parameters
+        ----------
+        shape : tuple
+            Input tensor shape (batch_size, N).
+        device : torch.device
+            Device for tensor allocation.
+
+        Returns
+        -------
+        torch.Tensor
+            Grid tensor, shape (batch_size, N, 1).
+        """
         batchsize, size_x = shape[0], shape[1]
         gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
         gridx = gridx.reshape(1, size_x, 1).repeat([batchsize, 1, 1])
