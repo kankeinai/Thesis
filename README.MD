@@ -1,6 +1,6 @@
-# Project Title
+# Thesis: Operator Learning and Optimal Control
 
-Created as part of a thesis project explore how operators can be learned and used in optimal control problems
+Created as part of a thesis project explore how different arcitectures of neural operators can be trained and used in optimal control problems
 
 ## Structure
 
@@ -24,7 +24,7 @@ Follow these steps to set up the project:
 
 1. **Clone the repository**:
     ```bash
-    git clone https://github.com/your-username/your-repo.git
+    git clone https://github.com/kankeinai/Thesis
     cd your-repo
     ```
 
