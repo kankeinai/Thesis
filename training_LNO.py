@@ -2,7 +2,7 @@ import torch
 from utils.data import MultiFunctionDatasetODE, custom_collate_ODE_fn_fno 
 from torch.utils.data import DataLoader
 from datetime import datetime
-from models.model_lno import *
+from models.lno import *
 from utils.scripts import *
 import os
 
