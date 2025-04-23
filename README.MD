@@ -1,6 +1,6 @@
 # Thesis: Operator Learning and Optimal Control
 
-Created as part of a thesis project explore how different arcitectures of neural operators can be trained and used in optimal control problems
+Created as part of a thesis project to explore how different arcitectures of neural operators can be trained and used in optimal control problems
 
 ## Structure
 
