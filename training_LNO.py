@@ -1,8 +1,9 @@
 import torch
-from data import MultiFunctionDatasetODE, custom_collate_ODE_fn_fno 
+from utils.data import MultiFunctionDatasetODE, custom_collate_ODE_fn_fno 
 from torch.utils.data import DataLoader
 from datetime import datetime
-from model_lno import *
+from models.model_lno import *
+from utils.scripts import *
 import os
 
 # -------------------------

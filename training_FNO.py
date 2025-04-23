@@ -1,9 +1,9 @@
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from data import MultiFunctionDatasetODE, custom_collate_ODE_fn_fno
-from model_fno import *
-from scripts import *
+from utils.data import MultiFunctionDatasetODE, custom_collate_ODE_fn_fno
+from models.model_fno import *
+from utils.scripts import *
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
