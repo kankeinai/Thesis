@@ -1,7 +1,6 @@
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
-from scipy.interpolate import griddata
+from torch.utils.data import Dataset
 
 def generate_gaussian_random_field_1d(grid_size, length_scale, end_time=1.0, mean=0, variance=1):
 
@@ -122,39 +121,74 @@ class MultiFunctionDatasetODE(Dataset):
             self.m,
         )
 
-
 def custom_collate_ODE_fn(batch):
-
-
     # Separate the components of each sample in the batch
-    end_time = batch[0][1]  # [num_domain, 2] (constant across batch)
-    num_domain = batch[0][2]      # [num_initial, 2] (constant across batch)
+    end_time = batch[0][1]
+    num_domain = batch[0][2]
     num_initial = batch[0][3]
     time_domain = batch[0][4]
     m = batch[0][5]
 
     batch_size = len(batch)
 
-    #time
+
+    
     time_points = np.random.uniform(0,end_time,(num_domain,1))
-    #intital
-    initial_points= np.zeros((num_initial,1))
-    #interpolated input
-    input_functions = np.zeros((batch_size,m))
-    input_at_times = np.zeros((batch_size,num_domain))
+    # Initial points could be first N from the grid (e.g., beginning of time)
+    initial_points = time_points[:num_initial]
+
+    # Allocate arrays
+    input_functions = np.zeros((batch_size, m))
+    input_at_times = np.zeros((batch_size, num_domain))
 
     for b, item in enumerate(batch):
         input_function = item[0]
-        input_functions[b,:] = input_function
+        input_functions[b, :] = input_function
 
-        input_at_time = np.interp(time_points, time_domain, input_function)
-        input_at_times[b,:] = input_at_time.flatten()
+        input_at_time = np.interp(time_points.flatten(), time_domain, input_function)
+        input_at_times[b, :] = input_at_time
 
-    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     return (
-        torch.tensor(input_functions).float().to(torch.device('cuda' if torch.cuda.is_available() else 'cpu')),        # [batch_size, m]
-        torch.tensor(time_points).float().to(torch.device('cuda' if torch.cuda.is_available() else 'cpu')),            # [num_domain, 1]
-        torch.tensor(initial_points).float().to(torch.device('cuda' if torch.cuda.is_available() else 'cpu')),         # [num_initial, 1]
-        torch.tensor(input_at_times).float().to(torch.device('cuda' if torch.cuda.is_available() else 'cpu')),         # [batch_size, num_domain]
+        torch.tensor(input_functions).float().to(device),       # [batch_size, m]
+        torch.tensor(time_points).float().to(device),           # [num_domain, 1]
+        torch.tensor(initial_points).float().to(device),        # [num_initial, 1]
+        torch.tensor(input_at_times).float().to(device),        # [batch_size, num_domain]
+    )
+
+def custom_collate_ODE_fn_fno(batch):
+    # Separate the components of each sample in the batch
+    end_time = batch[0][1]
+    num_domain = batch[0][2]
+    num_initial = batch[0][3]
+    time_domain = batch[0][4]
+    m = batch[0][5]
+
+    batch_size = len(batch)
+
+
+    
+    time_points = np.linspace(0, end_time, num_domain).reshape(-1, 1)
+    # Initial points could be first N from the grid (e.g., beginning of time)
+    initial_points = time_points[:num_initial]
+
+    # Allocate arrays
+    input_functions = np.zeros((batch_size, m))
+    input_at_times = np.zeros((batch_size, num_domain))
+
+    for b, item in enumerate(batch):
+        input_function = item[0]
+        input_functions[b, :] = input_function
+
+        input_at_time = np.interp(time_points.flatten(), time_domain, input_function)
+        input_at_times[b, :] = input_at_time
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    return (
+        torch.tensor(input_functions).float().to(device),       # [batch_size, m]
+        torch.tensor(time_points).float().to(device),           # [num_domain, 1]
+        torch.tensor(initial_points).float().to(device),        # [num_initial, 1]
+        torch.tensor(input_at_times).float().to(device),        # [batch_size, num_domain]
     )
