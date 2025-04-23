@@ -38,5 +38,5 @@ scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, f
 # -------------------------
 # Train
 # -------------------------
-epochs = 1000
-trained_model = train_fno(model, dataloader, optimizer, scheduler, device, epochs, t_grid)
+epochs = 100
+trained_model = train_fno(model, dataloader, optimizer, scheduler, epochs, t_grid, logging=False)

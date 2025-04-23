@@ -30,6 +30,8 @@ def train_fno(model, dataloader, optimizer, scheduler, epochs, t_grid, alpha = 1
         epoch_loss = 0.0
         n_batches = 0
 
+        start_time = datetime.now()
+
         for u, _, _, _ in dataloader:
 
             u = u.to(device)
@@ -45,11 +47,11 @@ def train_fno(model, dataloader, optimizer, scheduler, epochs, t_grid, alpha = 1
             n_batches += 1
 
             if logging:
-                print(f'Epoch [{epoch+1}/{epochs}], Physics loss: {physics_loss}, Initial loss: {initial_loss}, Time: {datetime.now().time()}')
+                print(f'Epoch [{epoch+1}/{epochs}], Physics loss: {physics_loss}, Initial loss: {initial_loss}')
 
         
         epoch_loss /= n_batches
-        print(f'Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.6f}, Time: {datetime.now().time()}') 
+        print(f'Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.6f}, Time: {(datetime.now() - start_time).total_seconds()} s') 
               
         timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
         os.makedirs(folder, exist_ok=True)
@@ -65,6 +67,8 @@ def train_lno(model, dataloader, optimizer, scheduler, epochs, alpha = 1, beta =
         model.train()
         epoch_loss = 0.0
         n_batches = 0
+
+        start_time = datetime.now()
 
         for u, t, _, _ in dataloader:
 
@@ -83,7 +87,8 @@ def train_lno(model, dataloader, optimizer, scheduler, epochs, alpha = 1, beta =
                 print(f"Epoch: {epoch}, Physics loss: {physics_loss}, Initial loss: {initial_loss}")
 
         epoch_loss /= n_batches
-        print(f'Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.6f}, Time: {datetime.now().time()}') 
+
+        print(f'Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.6f}, Time: {(datetime.now() - start_time).total_seconds()} s') 
 
         if (epoch + 1) % 10 == 0:
             timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
