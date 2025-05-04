@@ -14,7 +14,8 @@ n_functions = 1000000
 end_time = 1.0
 m = 200
 batch_size = 1024
-t_grid = torch.linspace(0, end_time, m).unsqueeze(0).repeat(batch_size, 1).unsqueeze(-1)
+t_grid = torch.linspace(0, end_time, m).unsqueeze(0).repeat(batch_size, 1).unsqueeze(-1).to(device)
+t_grid.requires_grad = True
 
 print("===============================\nStarted generating dataset")
 
@@ -35,9 +36,9 @@ print("===============================\nDataset is ready")
 # -------------------------
 # Model Definition
 # -------------------------
-model = FNO1d(modes=16, width=64).to(device)
+model = FNO1d(modes=32, width=64).to(device)
 
-step_size = 100
+step_size = 3
 gamma = 0.9
 learning_rate = 0.001
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
@@ -46,6 +47,6 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamm
 # -------------------------
 # Train
 # -------------------------
-epochs = 100
+epochs = 10
 print("===============================\nTraining started")
-trained_model = train_fno(model, dataloader, optimizer, scheduler, epochs, t_grid, logging=False)
+trained_model = train_fno(model, compute_loss_nde, dataloader, optimizer, scheduler, epochs, t_grid, logging=True)

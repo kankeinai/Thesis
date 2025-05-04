@@ -24,10 +24,19 @@ class PR(nn.Module):
         """
         super(PR, self).__init__()
 
+
         self.modes1 = modes1
         self.scale = (1 / (in_channels * out_channels))
         self.weights_pole = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, dtype=torch.cfloat))
         self.weights_residue = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, dtype=torch.cfloat))
+
+        with torch.no_grad():
+            # constrain poles to have small negative real part
+            phase = torch.rand_like(self.weights_pole).angle()
+            radius = torch.rand_like(self.weights_pole.real) * 0.1
+            self.weights_pole.copy_(radius.exp() * torch.exp(1j * phase) * (-1.0))
+            # residues small random
+            self.weights_residue.mul_(0.1)
    
     def output_PR(self, lambda1,alpha, weights_pole, weights_residue):   
         """
@@ -78,24 +87,26 @@ class PR(nn.Module):
             Output signal, shape (batch, out_channels, N).
         """
 
-        dt=(t[1]-t[0]).item()
+
+        dt = (t[1,0] - t[0,0]).item()   
         alpha = torch.fft.fft(x)
         lambda0=torch.fft.fftfreq(t.shape[0], dt)*2*np.pi*1j
         lambda1=lambda0.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
         lambda1=lambda1.cuda()
 
         # Obtain output poles and residues for transient part and steady-state part
-        output_residue1,output_residue2= self.output_PR(lambda1, alpha, self.weights_pole, self.weights_residue)
+        output_residue1,output_residue2 = self.output_PR(lambda1, alpha, self.weights_pole, self.weights_residue)
 
         # Obtain time histories of transient response and steady-state response
         x1 = torch.fft.ifft(output_residue1, n=x.size(-1))
         x1 = torch.real(x1)
-        x2=torch.zeros(output_residue2.shape[0],output_residue2.shape[1],t.shape[0], device=alpha.device, dtype=torch.cfloat)    
+        x2=torch.zeros(output_residue2.shape[0],output_residue2.shape[1], t.shape[0], device=alpha.device, dtype=torch.cfloat)    
         term1=torch.einsum("bix,kz->bixz", self.weights_pole, t.type(torch.complex64).reshape(1,-1))
         term2=torch.exp(term1) 
-        x2=torch.einsum("bix,ioxz->boz", output_residue2,term2)
+        x2=torch.einsum("bix,ioxz->boz", output_residue2, term2)
         x2=torch.real(x2)
         x2=x2/x.size(-1)
+
         return x1+x2
 
 class LNO1d(nn.Module):
@@ -128,7 +139,7 @@ class LNO1d(nn.Module):
         self.fc1 = nn.Linear(self.width, hidden_layer)
         self.fc2 = nn.Linear(hidden_layer, 1)
 
-    def forward(self, x, t):
+    def forward(self, x, t_grid):
         """
         Forward pass of the LNO1d.
 
@@ -144,12 +155,12 @@ class LNO1d(nn.Module):
         torch.Tensor
             Predicted field, shape (batch, N, 1).
         """
-        grid = self.get_grid(x.shape, x.device)
-        x = torch.cat((x, grid), dim=-1)
+        x = torch.cat((x, t_grid), dim=-1)
         x = self.fc0(x)
         x = x.permute(0, 2, 1)
         x = torch.sin(x)
 
+        t = t_grid[0:1].expand_as(t_grid)[0]
         x1 = self.conv0(x, t)
         x2 = self.w0(x)
         x = x1 + x2
@@ -159,25 +170,4 @@ class LNO1d(nn.Module):
         x =  torch.sin(x)
         x = self.fc2(x)
         return x
-
-    def get_grid(self, shape, device):
-        """
-        Generate a normalized spatial grid in [0,1] for each batch.
-
-        Parameters
-        ----------
-        shape : tuple
-            Input tensor shape (batch_size, N).
-        device : torch.device
-            Device for tensor allocation.
-
-        Returns
-        -------
-        torch.Tensor
-            Grid tensor, shape (batch_size, N, 1).
-        """
-        batchsize, size_x = shape[0], shape[1]
-        gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
-        gridx = gridx.reshape(1, size_x, 1).repeat([batchsize, 1, 1])
-        return gridx.to(device)
     

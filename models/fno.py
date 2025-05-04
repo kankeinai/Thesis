@@ -33,8 +33,16 @@ class SpectralConv1d(nn.Module):
     def forward(self, x):
         B, C, N = x.shape
         x_ft = torch.fft.rfft(x, dim=-1) 
-        out_ft = torch.zeros(B, self.out_channels, x_ft.size(-1), dtype=torch.cfloat, device=x.device)
-        out_ft[:, :, :self.modes1] = self.compl_mul1d(x_ft[:, :, :self.modes1], self.weights1)
+        
+        # after (out-of-place)
+        head = self.compl_mul1d(x_ft[:, :, :self.modes1], self.weights1)
+        # make a zero‐tensor for the trailing modes
+        tail = torch.zeros(
+            x_ft.size(0), x_ft.size(1), x_ft.size(2) - self.modes1,
+            dtype=x_ft.dtype, device=x_ft.device
+        )
+        out_ft = torch.cat([head, tail], dim=-1)
+
         x = torch.fft.irfft(out_ft, n=N, dim=-1)  
         return x
 

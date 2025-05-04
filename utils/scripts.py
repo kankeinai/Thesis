@@ -3,52 +3,53 @@ from datetime import datetime
 import os
 import seaborn as sns
 import matplotlib.pyplot as plt
+from torch.func import jvp, vmap
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def compute_loss(model, u, t, model_name="fno"): 
-    
-    """
-    Compute the combined physics-informed and initial-condition loss for a neural operator.
+def compute_loss(model, u, t, model_name="lno", method="autograd"):
+    # u: (B, N, 1), t: (B, N, 1) with requires_grad=True
 
-    Parameters
-    ----------
-    model : nn.Module
-        The trained neural operator (e.g., FNO1d or LNO).
-    u : torch.Tensor, shape (B, N)
-        Input field values at each spatial location for each batch example.
-    t : torch.Tensor, shape depends on model
-        Coordinate or time grid corresponding to u. For FNO, shape (B, N, 1).
-    model_name : str, optional
-        Identifier for model type; affects finite-difference spacing:
-        - "fno": uses t[0, 1] - t[0, 0]
-        - "lno": uses t[1] - t[0]
+    # 1) single forward for the entire batch/time grid
+    x3 = model(u, t)           # → (B, N, 1), graph still alive
+    x  = x3.squeeze(-1)        # → (B, N)
+    u0 = u.squeeze(-1)        # → (B, N)
+    B, N = x.shape
 
-    Returns
-    -------
-    physics_loss : torch.Tensor
-        Mean squared residual of the PDE approximation.
-    initial_loss : torch.Tensor
-        Mean squared error at the initial spatial point (boundary) against 1.0.
-    """
-    x = model(u, t)
-    if model_name=="lno":
-        dt=(t[1]-t[0]).item()
-    elif model_name=="fno":
-        dt=(t[0,1]-t[0, 0]).item()
-    dx_dt = (x[:, 1:, :] - x[:, :-1, :]) / dt  # crude finite diff
+    if method == "finite":    
 
-    if model_name=="lno":
-        residual = dx_dt + x[:, :-1, :] - u[:, :-1, :]
-    elif model_name=="fno":
-        residual = dx_dt + x[:, :-1, :] - u[:, :-1].unsqueeze(-1)
+        # pick out a single copy of the time‐vector, shape (N,)
+        t_vec = t[0, :, 0]             # -> (N,)
 
-    physics_loss = torch.mean(residual ** 2)
-    initial_loss = torch.mean((x[:, 0, :] - 1.0)**2)
+        # compute the finite‐difference gradient along dim=1
+        dx_dt = torch.gradient(
+            x,
+            spacing=(t_vec,),  # <-- a 1-D tensor of length N
+            dim=1
+        )[0]                        # -> (B, N)
+
+    elif method == "autograd":
+# 2) Prepare dx/dt buffer
+        dx_dt = torch.zeros_like(x)
+
+        for i in range(N):
+            yi = x[:, i]
+            gi = torch.autograd.grad(
+                yi.sum(),
+                t,
+                create_graph=True,
+                retain_graph=True,
+            )[0]
+            dx_dt[:, i] = gi[:,i, 0]
+
+    residual    = dx_dt + x - u0
+    physics_loss = residual.pow(2).mean()
+    initial_loss = (x[:, 0] - 1.0).pow(2).mean()
+
     return physics_loss, initial_loss
 
 
-def train_fno(model, dataloader, optimizer, scheduler, epochs, t_grid, w=[1,1], folder = "trained_models/fno", logging = True):
+def train_fno(model, dataloader, optimizer, scheduler, epochs, t_grid, w=[1,1], method="autograd", folder = "trained_models/fno", logging = True):
     """
     Train a Fourier Neural Operator (FNO) model.
 
@@ -89,10 +90,10 @@ def train_fno(model, dataloader, optimizer, scheduler, epochs, t_grid, w=[1,1], 
         for u, _, _, _ in dataloader:
 
             u = u.to(device)
-            t = t_grid[:u.shape[0], :].to(device)
+            t = t_grid[:u.shape[0], :].to(device).clone().detach().requires_grad_(True)
             optimizer.zero_grad()
             
-            physics_loss, initial_loss = compute_loss(model, u, t, model_name="fno")
+            physics_loss, initial_loss = compute_loss(model, u, t, model_name="fno", method=method)
             loss = w[0]*physics_loss + w[1]*initial_loss
             loss.backward()
             optimizer.step()
@@ -114,7 +115,7 @@ def train_fno(model, dataloader, optimizer, scheduler, epochs, t_grid, w=[1,1], 
 
     return model
 
-def train_lno(model, dataloader, optimizer, scheduler, epochs, w = [1,1], folder = "trained_models/lno", logging = True):
+def train_lno(model, dataloader, optimizer, scheduler, epochs, t_grid, method="autograd", w = [1,1], folder = "trained_models/lno", logging = True):
     """
     Train a Lagrangian Neural Operator (LNO) model.
 
@@ -150,12 +151,15 @@ def train_lno(model, dataloader, optimizer, scheduler, epochs, w = [1,1], folder
 
         start_time = datetime.now()
 
-        for u, t, _, _ in dataloader:
+
+        for u, _, _, _ in dataloader:
 
             u = u.to(device).unsqueeze(-1)
+            t  = t_grid.repeat([u.shape[0], 1, 1]).clone().detach().requires_grad_(True)
+
             optimizer.zero_grad()
 
-            physics_loss, initial_loss = compute_loss(model, u, t, model_name="lno")
+            physics_loss, initial_loss = compute_loss(model, u, t, model_name="lno", method=method)
             loss = w[0] * physics_loss + w[1] * initial_loss
             loss.backward()
             optimizer.step()
@@ -178,7 +182,7 @@ def train_lno(model, dataloader, optimizer, scheduler, epochs, w = [1,1], folder
 
         scheduler.step()
 
-def objective_function(args, model_name):
+def objective_function(args, method="autograd"):
 
     """
     Compute the total objective J = w_control * control_cost
@@ -200,23 +204,43 @@ def objective_function(args, model_name):
         Scalar objective value.
     """
 
+    B, N = u.shape
+
+
     x = args['x']
     u = args['u']
     t = args['t']
     w = args['w']
+           # (B, N, 1)
+    x  = x.squeeze(-1)            # (B, N)
+    u0 = u.squeeze(-1)            # (B, N)
 
-    if model_name=="lno":
-        dt = (t[1] - t[0]).item()
-    elif model_name=="fno":
-        dt = (t[0, 1] - t[0, 0]).item()
+    if method == "autograd":
+        dx_dt = torch.zeros_like(x)
 
+        for i in range(N):
+            yi = x[:, i]
+            gi = torch.autograd.grad(
+                yi.sum(),
+                t,
+                create_graph=True,
+                retain_graph=True,
+            )[0]
+            dx_dt[:, i] = gi[:,i, 0]
+       
+    elif method == "finite":
+        # pick out a single copy of the time‐vector, shape (N,)
+        t_vec = t[0, :, 0]             # -> (N,)
 
-    dx_dt = (x[:, 1:, :] - x[:, :-1, :]) / dt  # crude finite diff
+        # compute the finite‐difference gradient along dim=1
+        dx_dt = torch.gradient(
+            x,
+            spacing=(t_vec,),  # <-- a 1-D tensor of length N
+            dim=1
+        )[0]                        # -> (B, N)
+        
 
-    if model_name=="lno":
-        residual = dx_dt + x[:, :-1, :] - u[:, :-1, :]
-    elif model_name=="fno":
-        residual = dx_dt + x[:, :-1, :] - u[:, :-1].unsqueeze(-1)
+    residual = dx_dt + x - u0
 
     physics_loss = torch.mean(residual ** 2)
     initial_loss = torch.mean((x[:, 0] - torch.ones(10, device = device))**2)
@@ -260,8 +284,8 @@ def optimize_neural_operator(model, objective_function, m, end_time, num_epochs,
     """
      
     if model_name=="lno":
-        u = (0.2 * torch.randn(1, m, device=device)).unsqueeze(-1)  # shape = (1, m, 1)
-        t = torch.linspace(0, end_time, m, device= device)
+        u = (0.2 * torch.randn(1, m, 1, device=device))
+        t = torch.tensor(torch.linspace(0, 1, m), dtype=torch.float).reshape(1, m, 1).to(device).repeat([u.shape[0], 1, 1]).clone().detach().requires_grad_(True)
     elif model_name=="fno":
         u = (0.2 * torch.randn(1, m, device=device))  # shape: [1, m]
         t = torch.linspace(0, end_time, m, device=device).unsqueeze(0).unsqueeze(-1)  # shape: [1, m, 1]

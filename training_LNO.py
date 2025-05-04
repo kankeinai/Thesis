@@ -1,5 +1,5 @@
 import torch
-from utils.data import MultiFunctionDatasetODE, custom_collate_ODE_fn_fno 
+from utils.data import MultiFunctionDatasetODE, custom_collate_ODE_fn
 from torch.utils.data import DataLoader
 from models.lno import *
 from utils.scripts import *
@@ -31,19 +31,21 @@ dataset = MultiFunctionDatasetODE(
     grf_ub = grf_ub
 )
 
-dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=custom_collate_ODE_fn_fno, shuffle=True)
+t_grid  = torch.tensor(np.linspace(0, 1, m), dtype=torch.float).reshape(1, m, 1).to(device)
+
+dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=custom_collate_ODE_fn, shuffle=True)
 print("===============================\nDataset is ready")
 # ====================================
 # Model definition
 # ====================================
 modes = 32
 width = 8
-model = LNO1d(width,modes).cuda()
+model = LNO1d(width,modes, hidden_layer=128).cuda()
 
 # ====================================
 # Training settings
 # ====================================
-step_size = 100
+step_size = 10
 gamma = 0.9
 learning_rate = 0.001
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
@@ -56,4 +58,4 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamm
 epochs = 100
 
 print("===============================\nTraining started")
-trained_model = train_lno(model, dataloader, optimizer, scheduler, epochs, logging=False)
+trained_model = train_lno(model, compute_loss_nde, dataloader, optimizer, scheduler, epochs, t_grid, save=5, method="finite", logging=True)
