@@ -3,53 +3,118 @@ from datetime import datetime
 import os
 import seaborn as sns
 import matplotlib.pyplot as plt
-from torch.func import jvp, vmap
+import numpy as np
+from functorch import grad, vmap
+from torch.func import jacrev  # or use autograd.functional.jacobian
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def compute_loss(model, u, t, model_name="lno", method="autograd"):
-    # u: (B, N, 1), t: (B, N, 1) with requires_grad=True
 
-    # 1) single forward for the entire batch/time grid
-    x3 = model(u, t)           # → (B, N, 1), graph still alive
-    x  = x3.squeeze(-1)        # → (B, N)
-    u0 = u.squeeze(-1)        # → (B, N)
-    B, N = x.shape
+import torch
+import numpy as np
 
-    if method == "finite":    
 
-        # pick out a single copy of the time‐vector, shape (N,)
-        t_vec = t[0, :, 0]             # -> (N,)
+import torch
 
-        # compute the finite‐difference gradient along dim=1
-        dx_dt = torch.gradient(
-            x,
-            spacing=(t_vec,),  # <-- a 1-D tensor of length N
-            dim=1
-        )[0]                        # -> (B, N)
+def compute_loss_nde(model, u, t, method="finite"):
+    # 1) Single forward pass
 
+    u0 = u.squeeze(-1)       # → (B, N)
+    B, N = u0.shape
+
+    # 2) Time step
+    t_vec = t[0, :, 0]               # (N,)
+    x3 = model(u, t)         # → (B, N, 1)
+    x  = x3.squeeze(-1)      # → (B, N)
+    # central differences + one‐sided at boundaries
+    dx_dt,  = torch.gradient(x, spacing=(t_vec,), dim=1)
+       
+    residual = dx_dt + 5/9 * (-x + x*u0 + u0**2)
+    # 4) Losses
+    physics_loss = residual.pow(2).mean()
+
+
+    return physics_loss, 0
+
+
+def compute_loss_ode(model, u, t, method="finite"):
+    """
+    Compute the physics‐informed and initial‐condition loss for
+        x'(t) + x(t) - u(t) = 0
+
+    Parameters
+    ----------
+    model  : nn.Module
+        Maps (u, t) -> x of shape (B, N, 1).
+    u      : torch.Tensor, shape (B, N, 1)
+        Forcing term.
+    t      : torch.Tensor, shape (B, N, 1)
+        Time grid (requires_grad only if method="autograd").
+    method : {"finite", "autograd", "spectral"}
+        How to compute ∂x/∂t.
+
+    Returns
+    -------
+    physics_loss : torch.Tensor
+    initial_loss : torch.Tensor
+    """
+
+    # 1) Single forward pass
+
+    u0 = u.squeeze(-1)       # → (B, N)
+    B, N = u0.shape
+
+    # 2) Time step
+    t_vec = t[0, :, 0]               # (N,)
+    dt    = (t_vec[1] - t_vec[0]).item()
+
+    # 3) Compute dx/dt
+    if method == "finite":
+        x3 = model(u, t)         # → (B, N, 1)
+        x  = x3.squeeze(-1)      # → (B, N)
+        # central differences + one‐sided at boundaries
+        dx_dt,  = torch.gradient(x, spacing=(t_vec,), dim=1)
+        
     elif method == "autograd":
-# 2) Prepare dx/dt buffer
-        dx_dt = torch.zeros_like(x)
+       # vectorized “predict only”:
+        x = vmap(lambda u_i, t_i: 
+            model(u_i.unsqueeze(0), t_i.unsqueeze(0))
+                .squeeze(0).squeeze(-1),
+            in_dims=(0,0)
+        )(u, t)    # → [B, N]
 
-        for i in range(N):
-            yi = x[:, i]
-            gi = torch.autograd.grad(
-                yi.sum(),
-                t,
-                create_graph=True,
-                retain_graph=True,
-            )[0]
-            dx_dt[:, i] = gi[:,i, 0]
+        # then your gradient code
+        per_sample_jacs = vmap(jacrev(lambda u_i, t_i: 
+            model(u_i.unsqueeze(0), t_i.unsqueeze(0))
+                .squeeze(0).squeeze(-1)
+        ), in_dims=(0,0))(u, t)  # → [B, N, N]
 
-    residual    = dx_dt + x - u0
+        idx   = torch.arange(N, device=u.device)
+        dx_dt = per_sample_jacs[:, idx, idx]  # → [B, N]
+
+
+    elif method == "spectral":
+        x3 = model(u, t)         # → (B, N, 1)
+        x  = x3.squeeze(-1)      # → (B, N)
+        # FFT‐based derivative
+        X     = torch.fft.rfft(x, dim=-1)                     
+        freqs = torch.fft.rfftfreq(n=N, d=dt, device=x.device) 
+        omega = 2 * torch.pi * freqs                          
+        X_dt  = (1j * omega.unsqueeze(0)) * X                  
+        dx_dt = torch.fft.irfft(X_dt, n=N, dim=-1)             
+
+
+    else:
+        raise ValueError(f"Unknown method {method!r}")
+    residual = dx_dt + x - u0
+    # 4) Losses
     physics_loss = residual.pow(2).mean()
     initial_loss = (x[:, 0] - 1.0).pow(2).mean()
 
     return physics_loss, initial_loss
 
 
-def train_fno(model, dataloader, optimizer, scheduler, epochs, t_grid, w=[1,1], method="autograd", folder = "trained_models/fno", logging = True):
+def train_fno(model, compute_loss, dataloader, optimizer, scheduler, epochs, t_grid, w=[1,1], method="autograd", folder = "trained_models/fno", logging = True):
     """
     Train a Fourier Neural Operator (FNO) model.
 
@@ -90,10 +155,12 @@ def train_fno(model, dataloader, optimizer, scheduler, epochs, t_grid, w=[1,1], 
         for u, _, _, _ in dataloader:
 
             u = u.to(device)
-            t = t_grid[:u.shape[0], :].to(device).clone().detach().requires_grad_(True)
+            t = t_grid[:u.size(0), :].to(device)
+            t.requires_grad_(True)    # (only if t_grid itself is a leaf with requires_grad=False)
+
             optimizer.zero_grad()
             
-            physics_loss, initial_loss = compute_loss(model, u, t, model_name="fno", method=method)
+            physics_loss, initial_loss = compute_loss(model, u, t, method=method)
             loss = w[0]*physics_loss + w[1]*initial_loss
             loss.backward()
             optimizer.step()
@@ -115,7 +182,7 @@ def train_fno(model, dataloader, optimizer, scheduler, epochs, t_grid, w=[1,1], 
 
     return model
 
-def train_lno(model, dataloader, optimizer, scheduler, epochs, t_grid, method="autograd", w = [1,1], folder = "trained_models/lno", logging = True):
+def train_lno(model, compute_loss, dataloader, optimizer, scheduler, epochs, t_grid, method="autograd",save=10, w = [1,1], folder = "trained_models/lno", logging = True):
     """
     Train a Lagrangian Neural Operator (LNO) model.
 
@@ -159,7 +226,7 @@ def train_lno(model, dataloader, optimizer, scheduler, epochs, t_grid, method="a
 
             optimizer.zero_grad()
 
-            physics_loss, initial_loss = compute_loss(model, u, t, model_name="lno", method=method)
+            physics_loss, initial_loss = compute_loss(model, u, t, method=method)
             loss = w[0] * physics_loss + w[1] * initial_loss
             loss.backward()
             optimizer.step()
@@ -174,7 +241,7 @@ def train_lno(model, dataloader, optimizer, scheduler, epochs, t_grid, method="a
 
         print(f'Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.6f}, Time: {(datetime.now() - start_time).total_seconds()} s') 
 
-        if (epoch + 1) % 10 == 0:
+        if (epoch + 1) % save == 0:
             timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
             os.makedirs(folder, exist_ok=True)
             model_filename = f'epochs_[{epoch+1}]_model_time_[{timestamp}]_loss_[{epoch_loss:.4f}].pth'
@@ -182,7 +249,7 @@ def train_lno(model, dataloader, optimizer, scheduler, epochs, t_grid, method="a
 
         scheduler.step()
 
-def objective_function(args, method="autograd"):
+def objective_function_ode(model, args, method="finite"):
 
     """
     Compute the total objective J = w_control * control_cost
@@ -204,31 +271,15 @@ def objective_function(args, method="autograd"):
         Scalar objective value.
     """
 
-    B, N = u.shape
-
-
-    x = args['x']
     u = args['u']
     t = args['t']
     w = args['w']
-           # (B, N, 1)
-    x  = x.squeeze(-1)            # (B, N)
+    x = args['x']
+
     u0 = u.squeeze(-1)            # (B, N)
+    dx_dt = torch.zeros_like(x)
 
-    if method == "autograd":
-        dx_dt = torch.zeros_like(x)
-
-        for i in range(N):
-            yi = x[:, i]
-            gi = torch.autograd.grad(
-                yi.sum(),
-                t,
-                create_graph=True,
-                retain_graph=True,
-            )[0]
-            dx_dt[:, i] = gi[:,i, 0]
-       
-    elif method == "finite":
+    if method == "finite":
         # pick out a single copy of the time‐vector, shape (N,)
         t_vec = t[0, :, 0]             # -> (N,)
 
@@ -238,7 +289,9 @@ def objective_function(args, method="autograd"):
             spacing=(t_vec,),  # <-- a 1-D tensor of length N
             dim=1
         )[0]                        # -> (B, N)
-        
+    else:
+        raise ValueError(f"Unknown method {method!r}")
+
 
     residual = dx_dt + x - u0
 
@@ -249,40 +302,40 @@ def objective_function(args, method="autograd"):
     J = w[0] * control_cost + w[1] * physics_loss + w[2] * initial_loss 
     return J
 
-def optimize_neural_operator(model, objective_function, m, end_time, num_epochs, learning_rate, w=[1,1,1], model_name="lno"):  
-
+def objective_function_nde(args, method="finite"):
     """
-    Optimize the control signal u to minimize the objective via gradient descent.
-
-    Parameters
-    ----------
-    model : nn.Module
-        Pretrained neural operator mapping (u, t) → x.
-    objective_function : callable
-        Function that computes J(args, model_name).
-    m : int
-        Number of time discretization points.
-    end_time : float
-        End of time interval [0, end_time].
-    num_epochs : int
-        Number of optimization steps.
-    learning_rate : float
-        Learning rate for the control optimizer.
-    w : list of float, optional
-        Weights for [control_cost, physics_loss, initial_loss].
-    model_name : str, optional
-        'lno' or 'fno' to match objective implementation.
-
-    Returns
-    -------
-    u : torch.Tensor
-        Optimized control signal, shape depends on model.
-    x : torch.Tensor
-        Final state trajectory from model(u, t).
-    t : torch.Tensor
-        Time grid used in optimization.
+    J = w[0]*control_cost + w[1]*physics_loss + w[2]*boundary_penalty
+    enforcing u ∈ [u_min, u_max] by reparameterization.
     """
-     
+    x = args['x']
+    u = args['u']
+    t  = args['t']
+    w = args['w']
+
+    # 2) compute dx/dt via finite‐differences
+    if method == "finite":
+        t_vec = t[0, :, 0]         # (N,)
+        dx_dt, = torch.gradient(x, spacing=(t_vec,), dim=1)
+    else:
+        raise ValueError(f"Unknown method {method!r}")
+
+    # 3) physics residual with bounded u
+    #    dx/dt + (5/9)*( -x + x*u + u**2 )  = 0
+    residual = dx_dt + 5/9 * (-x + x*u + u**2)
+    physics_loss = residual.pow(2).mean()
+
+    # 4) end‐point control cost (e.g. minimize x(T)^2)
+    control_cost = -x[:, -1].mean()
+
+    # 6) total objective
+    J = w[0] * control_cost \
+      + w[1] * physics_loss \
+
+    return J
+
+
+def optimize_neural_operator(model, objective_function, m, end_time, num_epochs, learning_rate, bounds=[0,5], w=[1,1,1], model_name="lno"):  
+
     if model_name=="lno":
         u = (0.2 * torch.randn(1, m, 1, device=device))
         t = torch.tensor(torch.linspace(0, 1, m), dtype=torch.float).reshape(1, m, 1).to(device).repeat([u.shape[0], 1, 1]).clone().detach().requires_grad_(True)
@@ -297,18 +350,29 @@ def optimize_neural_operator(model, objective_function, m, end_time, num_epochs,
     for epoch in range(num_epochs):
 
         optimizer.zero_grad()
-        x = model(u, t)
 
-        args = {'u': u, 't': t, 'x':x, 'w':w}
-        loss = objective_function(args, model_name)
+        if bounds is not None:
+            u_min, u_max = bounds[0], bounds[1]
+            u_bounded = u_min + (u_max - u_min) * 0.5 * (1 + torch.tanh(u))
+        else:
+            u_bounded = u
+        
+        x = model(u_bounded, t)
+
+        args = {'u': u_bounded, 'x': x, 't': t, 'w':w}
+
+        loss = objective_function(args)
         loss.backward()
         optimizer.step()
-
 
         if (epoch+1) % 100 == 0:
             print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}, time: {datetime.now().time()}')
 
         scheduler.step()
+    
+    u = u.squeeze(-1)            # shape: [1, m]
+    x = model(u, t).squeeze(-1)  
+    t = t.squeeze(-1)            # shape: [1, m]
 
     return u, x, t
 
