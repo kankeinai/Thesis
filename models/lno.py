@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import torch.nn.functional as F
 
 class PR(nn.Module):
     """
@@ -92,7 +93,7 @@ class PR(nn.Module):
         alpha = torch.fft.fft(x)
         lambda0=torch.fft.fftfreq(t.shape[0], dt)*2*np.pi*1j
         lambda1=lambda0.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-        lambda1=lambda1.cuda()
+        lambda1=lambda1.to(x.device, dtype=torch.cfloat)
 
         # Obtain output poles and residues for transient part and steady-state part
         output_residue1,output_residue2 = self.output_PR(lambda1, alpha, self.weights_pole, self.weights_residue)
@@ -132,12 +133,13 @@ class LNO1d(nn.Module):
         self.width = width
         self.modes1 = modes
         self.fc0 = nn.Linear(2, self.width) 
-
         self.conv0 = PR(self.width, self.width, self.modes1)
         self.w0 = nn.Conv1d(self.width, self.width, 1)
 
+
         self.fc1 = nn.Linear(self.width, hidden_layer)
-        self.fc2 = nn.Linear(hidden_layer, 1)
+        self.fc2 = nn.Linear(hidden_layer, 16)
+        self.fc3 = nn.Linear(16, 1)
 
     def forward(self, x, t_grid):
         """
@@ -158,16 +160,20 @@ class LNO1d(nn.Module):
         x = torch.cat((x, t_grid), dim=-1)
         x = self.fc0(x)
         x = x.permute(0, 2, 1)
-        x = torch.sin(x)
 
         t = t_grid[0:1].expand_as(t_grid)[0]
+
         x1 = self.conv0(x, t)
         x2 = self.w0(x)
         x = x1 + x2
+        x = torch.sin(x)
 
         x = x.permute(0, 2, 1)
         x = self.fc1(x)
-        x =  torch.sin(x)
+        x = torch.sin(x)
         x = self.fc2(x)
+        x = torch.sin(x)
+        x = self.fc3(x)
+
         return x
     

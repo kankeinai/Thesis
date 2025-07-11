@@ -6,9 +6,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from functorch import grad, vmap
 from torch.func import jacrev  # or use autograd.functional.jacobian
+import torch.nn.functional as F
+import torch.backends.cudnn as cudnn
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+from scipy.signal import savgol_filter
 
 import torch
 import numpy as np
@@ -16,28 +18,128 @@ import numpy as np
 
 import torch
 
-def compute_loss_nde(model, u, t, method="finite"):
-    # 1) Single forward pass
+import torch
+import torch.nn.functional as F
+from typing import Tuple
 
-    u0 = u.squeeze(-1)       # → (B, N)
-    B, N = u0.shape
+import torch
+from typing import Tuple
 
-    # 2) Time step
-    t_vec = t[0, :, 0]               # (N,)
-    x3 = model(u, t)         # → (B, N, 1)
-    x  = x3.squeeze(-1)      # → (B, N)
-    # central differences + one‐sided at boundaries
-    dx_dt,  = torch.gradient(x, spacing=(t_vec,), dim=1)
-       
-    residual = dx_dt + 5/9 * (-x + x*u0 + u0**2)
+def cubic_spline_interp(
+    x: torch.Tensor,    # shape [B, N]
+    t: torch.Tensor     # shape [M], values in [0,1]
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Given a batch of B signals x on a uniform N-point [0,1] grid,
+    and M query-points t (shared across batch), compute:
+      - out: the natural cubic-spline interpolant S(t) at each t[j]
+      - dx_dt: the derivative S'(t) at each t[j]
+    Returns (out, dx_dt), both of shape [B, M].
+    """
+    B, N = x.shape
+    M = t.shape[0]
+    device, dtype = x.device, x.dtype
+    h = 1.0 / (N - 1)
+
+    # --- 1) solve for second derivatives m at the N knots ---
+    # right-hand side size [B, N-2]
+    d = 6.0 * (x[:, 2:] - 2 * x[:, 1:-1] + x[:, :-2]) / (h*h)
+
+    k = N - 2
+    a = torch.ones(k-1, device=device, dtype=dtype)
+    b = 4.0 * torch.ones(k,   device=device, dtype=dtype)
+    c = torch.ones(k-1, device=device, dtype=dtype)
+
+    # Thomas algorithm
+    cp = torch.empty(k-1, device=device, dtype=dtype)
+    dp = torch.empty(B, k,   device=device, dtype=dtype)
+    cp[0]   = c[0] / b[0]
+    dp[:,0] = d[:,0] / b[0]
+    for i in range(1, k-1):
+        denom   = b[i] - a[i-1] * cp[i-1]
+        cp[i]   = c[i] / denom
+        dp[:,i] = (d[:,i] - a[i-1] * dp[:,i-1]) / denom
+    dp[:,k-1] = (d[:,k-1] - a[k-2] * dp[:,k-2]) / (b[k-1] - a[k-2] * cp[k-2])
+
+    m_int = torch.empty_like(dp)
+    m_int[:,-1] = dp[:,-1]
+    for i in range(k-2, -1, -1):
+        m_int[:,i] = dp[:,i] - cp[i] * m_int[:,i+1]
+
+    # full second-derivative array, with natural BCs (zero at ends)
+    m = torch.zeros(B, N, device=device, dtype=dtype)
+    m[:,1:-1] = m_int
+
+    # --- 2) for each query t, find its interval [t_i, t_{i+1}] ---
+    # lift to [B, M, 1] so we can do batch-gather below
+    t_full = t.view(1, M, 1).expand(B, M, 1)
+
+    # continuous index u = t*(N-1)
+    u  = t_full * (N - 1)
+    i0 = u.floor().long().clamp(0, N-2)  # left knot index, shape [B,M,1]
+    i1 = i0 + 1                         # right knot
+
+    # distances from each knot
+    t_i  = i0.to(dtype) * h              # shape [B,M,1]
+    dt0  = (t_i + h - t_full)            # = t_{i+1} - t
+    dt1  = (t_full - t_i)                # = t - t_i
+
+    # --- 3) gather y_i, y_{i+1}, m_i, m_{i+1} ---
+    # after squeeze, shapes [B,M]
+    y0 = x.gather(1, i0.squeeze(-1))
+    y1 = x.gather(1, i1.squeeze(-1))
+    m0 = m.gather(1, i0.squeeze(-1))
+    m1 = m.gather(1, i1.squeeze(-1))
+
+    # --- 4) compute spline and its derivative via Hermite form ---
+    coeff0 = m0 / (6 * h)
+    coeff1 = m1 / (6 * h)
+
+    S = (
+        coeff0 * dt0.squeeze(-1)**3 +
+        coeff1 * dt1.squeeze(-1)**3 +
+        (y0 - m0*h*h/6) * (dt0.squeeze(-1)/h) +
+        (y1 - m1*h*h/6) * (dt1.squeeze(-1)/h)
+    )   # [B, M]
+
+    dS_dt = (
+        -m0/(2*h) * dt0.squeeze(-1)**2 +
+         m1/(2*h) * dt1.squeeze(-1)**2 +
+        -(y0 - m0*h*h/6)/h +
+         (y1 - m1*h*h/6)/h
+    )   # [B, M]
+
+    return S, dS_dt
+
+
+def compute_loss_nde(model, u, t, t0, ut, t_grid, method="finite"):
+
+    device = u.device
+    t_vec = t_grid[0, :, 0].to(device)
+    x3 = model(u, t_grid)         # → (B, N, 1)
+    x  = x3.squeeze(-1)      # →
+    initial = (x[:, 0] - 1.0).pow(2).mean()
+
+    if method == "finite":
+        # central differences + one‐sided at boundaries
+        dx_dt,  = torch.gradient(x, spacing=(t_vec,), dim=1)
+        u0 = u.squeeze(-1)  # (B, N)
+        residual = dx_dt - 5/2 * (-x + x*u0 + u0**2)
+
+    elif method == "interpolate":
+
+        x_new, dx_dt = cubic_spline_interp(x, t)
+        u0 = ut.squeeze(-1)
+        residual = dx_dt - 5/2 * (-x_new + x_new*u0 + u0**2)
+
     # 4) Losses
     physics_loss = residual.pow(2).mean()
 
 
-    return physics_loss, 0
+    return physics_loss, initial
 
 
-def compute_loss_ode(model, u, t, method="finite"):
+def compute_loss_ode(model, u, t, t0, ut, t_grid, method="finite"):
     """
     Compute the physics‐informed and initial‐condition loss for
         x'(t) + x(t) - u(t) = 0
@@ -60,56 +162,31 @@ def compute_loss_ode(model, u, t, method="finite"):
     """
 
     # 1) Single forward pass
+    
+    device = u.device
+    t_vec = t_grid[0, :, 0].to(device)
+    x3 = model(u, t_grid)         # → (B, N, 1)
+    x  = x3.squeeze(-1)      # → (B, N)
 
-    u0 = u.squeeze(-1)       # → (B, N)
-    B, N = u0.shape
-
-    # 2) Time step
-    t_vec = t[0, :, 0]               # (N,)
-    dt    = (t_vec[1] - t_vec[0]).item()
+    initial_loss = (x[:, 0] - 1.0).pow(2).mean()
 
     # 3) Compute dx/dt
     if method == "finite":
-        x3 = model(u, t)         # → (B, N, 1)
-        x  = x3.squeeze(-1)      # → (B, N)
         # central differences + one‐sided at boundaries
         dx_dt,  = torch.gradient(x, spacing=(t_vec,), dim=1)
-        
-    elif method == "autograd":
-       # vectorized “predict only”:
-        x = vmap(lambda u_i, t_i: 
-            model(u_i.unsqueeze(0), t_i.unsqueeze(0))
-                .squeeze(0).squeeze(-1),
-            in_dims=(0,0)
-        )(u, t)    # → [B, N]
+        u0 = u.squeeze(-1)  # (B, N)
+        residual = dx_dt + x - u0
 
-        # then your gradient code
-        per_sample_jacs = vmap(jacrev(lambda u_i, t_i: 
-            model(u_i.unsqueeze(0), t_i.unsqueeze(0))
-                .squeeze(0).squeeze(-1)
-        ), in_dims=(0,0))(u, t)  # → [B, N, N]
+    elif method == "interpolate":
 
-        idx   = torch.arange(N, device=u.device)
-        dx_dt = per_sample_jacs[:, idx, idx]  # → [B, N]
-
-
-    elif method == "spectral":
-        x3 = model(u, t)         # → (B, N, 1)
-        x  = x3.squeeze(-1)      # → (B, N)
-        # FFT‐based derivative
-        X     = torch.fft.rfft(x, dim=-1)                     
-        freqs = torch.fft.rfftfreq(n=N, d=dt, device=x.device) 
-        omega = 2 * torch.pi * freqs                          
-        X_dt  = (1j * omega.unsqueeze(0)) * X                  
-        dx_dt = torch.fft.irfft(X_dt, n=N, dim=-1)             
-
+        x_new, dx_dt = cubic_spline_interp(x, t)
+        ut = ut.squeeze(-1)
+        residual = dx_dt + x_new - ut
 
     else:
         raise ValueError(f"Unknown method {method!r}")
-    residual = dx_dt + x - u0
-    # 4) Losses
+    
     physics_loss = residual.pow(2).mean()
-    initial_loss = (x[:, 0] - 1.0).pow(2).mean()
 
     return physics_loss, initial_loss
 
@@ -144,6 +221,7 @@ def train_fno(model, compute_loss, dataloader, optimizer, scheduler, epochs, t_g
     model : nn.Module
         The trained model (state_dict saved to disk each epoch).
     """
+      # (N,)
     for epoch in range(epochs):
 
         model.train()
@@ -152,16 +230,16 @@ def train_fno(model, compute_loss, dataloader, optimizer, scheduler, epochs, t_g
 
         start_time = datetime.now()
 
-        for u, _, _, _ in dataloader:
-
+        for u, t, t0, ut in dataloader:
+            
             u = u.to(device)
-            t = t_grid[:u.size(0), :].to(device)
-            t.requires_grad_(True)    # (only if t_grid itself is a leaf with requires_grad=False)
+
+     
+            optimizer.zero_grad()
+            physics_loss, initial_loss = compute_loss(model, u, t, t0, ut, t_grid, method=method)
+            loss = w[0]*physics_loss + w[1]*initial_loss
 
             optimizer.zero_grad()
-            
-            physics_loss, initial_loss = compute_loss(model, u, t, method=method)
-            loss = w[0]*physics_loss + w[1]*initial_loss
             loss.backward()
             optimizer.step()
 
@@ -224,10 +302,11 @@ def train_lno(model, compute_loss, dataloader, optimizer, scheduler, epochs, t_g
             u = u.to(device).unsqueeze(-1)
             t  = t_grid.repeat([u.shape[0], 1, 1]).clone().detach().requires_grad_(True)
 
-            optimizer.zero_grad()
 
             physics_loss, initial_loss = compute_loss(model, u, t, method=method)
             loss = w[0] * physics_loss + w[1] * initial_loss
+
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
@@ -249,7 +328,7 @@ def train_lno(model, compute_loss, dataloader, optimizer, scheduler, epochs, t_g
 
         scheduler.step()
 
-def objective_function_ode(model, args, method="finite"):
+def objective_function_ode(args, method="finite"):
 
     """
     Compute the total objective J = w_control * control_cost
@@ -321,47 +400,49 @@ def objective_function_nde(args, method="finite"):
 
     # 3) physics residual with bounded u
     #    dx/dt + (5/9)*( -x + x*u + u**2 )  = 0
-    residual = dx_dt + 5/9 * (-x + x*u + u**2)
+    residual = dx_dt - (5/2)*(-x + x*u - u**2)
     physics_loss = residual.pow(2).mean()
+    initial_loss = (x[:, 0] - 1.0).pow(2)
 
     # 4) end‐point control cost (e.g. minimize x(T)^2)
-    control_cost = -x[:, -1].mean()
+    control_cost = -x[:, -1]
+    du_dt, = torch.gradient(u, spacing=(t_vec,), dim=1)
+    d2u_dt2, = torch.gradient(du_dt, spacing=(t_vec,), dim=1)
+
+    noise_cost = du_dt.pow(2).mean()
 
     # 6) total objective
     J = w[0] * control_cost \
       + w[1] * physics_loss \
+      + w[2] * initial_loss \
+      + w[3] * noise_cost
 
     return J
 
 
-def optimize_neural_operator(model, objective_function, m, end_time, num_epochs, learning_rate, bounds=[0,5], w=[1,1,1], model_name="lno"):  
+def optimize_neural_operator(model, objective_function, m, end_time, num_epochs, learning_rate, bounds=1, w=[1,1,1], model_name="lno"):  
 
     if model_name=="lno":
-        u = (0.2 * torch.randn(1, m, 1, device=device))
-        t = torch.tensor(torch.linspace(0, 1, m), dtype=torch.float).reshape(1, m, 1).to(device).repeat([u.shape[0], 1, 1]).clone().detach().requires_grad_(True)
+        u = torch.randn(1, m, 1, device=device, requires_grad=True)
+        t = torch.tensor(torch.linspace(0, end_time, m, ), dtype=torch.float).reshape(1, m, 1).to(device)
     elif model_name=="fno":
-        u = (0.2 * torch.randn(1, m, device=device))  # shape: [1, m]
+        u = torch.randn(1, m, device=device, requires_grad=True)
         t = torch.linspace(0, end_time, m, device=device).unsqueeze(0).unsqueeze(-1)  # shape: [1, m, 1]
 
-    u.requires_grad_(True)
     optimizer = torch.optim.Adam([u], lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1000, gamma=0.9)
 
     for epoch in range(num_epochs):
 
         optimizer.zero_grad()
-
-        if bounds is not None:
-            u_min, u_max = bounds[0], bounds[1]
-            u_bounded = u_min + (u_max - u_min) * 0.5 * (1 + torch.tanh(u))
-        else:
-            u_bounded = u
         
-        x = model(u_bounded, t)
+        x = model(u, t)
 
-        args = {'u': u_bounded, 'x': x, 't': t, 'w':w}
+        args = {'u': u, 'x': x, 't': t, 'w':w}
 
         loss = objective_function(args)
+        
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
@@ -370,7 +451,6 @@ def optimize_neural_operator(model, objective_function, m, end_time, num_epochs,
 
         scheduler.step()
     
-    u = u.squeeze(-1)            # shape: [1, m]
     x = model(u, t).squeeze(-1)  
     t = t.squeeze(-1)            # shape: [1, m]
 

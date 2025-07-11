@@ -74,20 +74,25 @@ class SimpleBlock1d(nn.Module):
         self.w2 = nn.Conv1d(self.width, self.width, 1)
         self.w3 = nn.Conv1d(self.width, self.width, 1)
 
-        self.fc1 = nn.Linear(self.width, 128)
-        self.fc2 = nn.Linear(128, 1)
+        self.fc1 = nn.Sequential(
+            nn.Linear(self.width, 256),
+            nn.SiLU(),
+            nn.Linear(256, 32),
+            nn.SiLU()
+        )
+        self.fc2 = nn.Linear(32, 1)
 
     def forward(self, x):
         x = self.fc0(x)
         x = x.permute(0, 2, 1)
 
-        x = F.gelu(self.conv0(x) + self.w0(x))
-        x = F.gelu(self.conv1(x) + self.w1(x))
-        x = F.gelu(self.conv2(x) + self.w2(x))
+        x = F.silu(self.conv0(x) + self.w0(x))
+        x = F.silu(self.conv1(x) + self.w1(x))
+        x = F.silu(self.conv2(x) + self.w2(x))
         x = self.conv3(x) + self.w3(x)
 
         x = x.permute(0, 2, 1)
-        x = F.gelu(self.fc1(x))
+        x = self.fc1(x)
         x = self.fc2(x)
         return x
 

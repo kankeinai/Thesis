@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import torch
 import numpy as np
 import math
-from data import generate_gaussian_random_field_1d
+from utils.data import generate_gaussian_random_field_1d
 import models
 from scipy.interpolate import griddata
 
