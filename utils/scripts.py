@@ -139,7 +139,7 @@ def compute_loss_nde(model, u, t, t0, ut, t_grid, method="finite"):
     return physics_loss, initial
 
 
-def compute_loss_ode(model, u, t, t0, ut, t_grid, method="finite"):
+def compute_loss_ode(x, u, t, method="finite"):
     """
     Compute the physics‐informed and initial‐condition loss for
         x'(t) + x(t) - u(t) = 0
@@ -164,9 +164,7 @@ def compute_loss_ode(model, u, t, t0, ut, t_grid, method="finite"):
     # 1) Single forward pass
     
     device = u.device
-    t_vec = t_grid[0, :, 0].to(device)
-    x3 = model(u, t_grid)         # → (B, N, 1)
-    x  = x3.squeeze(-1)      # → (B, N)
+    t_vec = t[0, :].to(device)
 
     initial_loss = (x[:, 0] - 1.0).pow(2).mean()
 
@@ -177,12 +175,6 @@ def compute_loss_ode(model, u, t, t0, ut, t_grid, method="finite"):
         u0 = u.squeeze(-1)  # (B, N)
         residual = dx_dt + x - u0
 
-    elif method == "interpolate":
-
-        x_new, dx_dt = cubic_spline_interp(x, t)
-        ut = ut.squeeze(-1)
-        residual = dx_dt + x_new - ut
-
     else:
         raise ValueError(f"Unknown method {method!r}")
     
@@ -191,7 +183,7 @@ def compute_loss_ode(model, u, t, t0, ut, t_grid, method="finite"):
     return physics_loss, initial_loss
 
 
-def train_fno(model, compute_loss, dataloader, optimizer, scheduler, epochs, t_grid, w=[1,1], method="autograd", folder = "trained_models/fno", logging = True):
+def train_fno(model, compute_loss, dataloader, optimizer, scheduler, epochs, w=[1,1], method="autograd", folder = "trained_models/fno", logging = True):
     """
     Train a Fourier Neural Operator (FNO) model.
 
@@ -230,18 +222,22 @@ def train_fno(model, compute_loss, dataloader, optimizer, scheduler, epochs, t_g
 
         start_time = datetime.now()
 
-        for u, t, t0, ut in dataloader:
-            
-            u = u.to(device)
-
-     
+        for u, t, trajectory, mask in dataloader:
             optimizer.zero_grad()
-            physics_loss, initial_loss = compute_loss(model, u, t, t0, ut, t_grid, method=method)
-            loss = w[0]*physics_loss + w[1]*initial_loss
+            x = model(u, t.unsqueeze(-1)).squeeze(-1)
+            physics_loss, initial_loss = compute_loss(x, u, t, method=method)
+            errors = torch.mean((x[mask] - trajectory[mask])**2, dim=1)
+            denoms = torch.mean(trajectory[mask]**2, dim=1)
+            individual_losses = errors / denoms
+            loss = torch.mean(individual_losses) + w[0]*physics_loss + w[1]*initial_loss
+
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
+            print(f'Individual losses: {individual_losses}')
+
 
             epoch_loss += loss.item()
             n_batches += 1
@@ -297,14 +293,17 @@ def train_lno(model, compute_loss, dataloader, optimizer, scheduler, epochs, t_g
         start_time = datetime.now()
 
 
-        for u, _, _, _ in dataloader:
+        for u, t, trajectory, mask in dataloader:
 
-            u = u.to(device).unsqueeze(-1)
-            t  = t_grid.repeat([u.shape[0], 1, 1]).clone().detach().requires_grad_(True)
+            u = u.unsqueeze(-1)
+            x = model(u, t).squeeze(-1)
 
 
-            physics_loss, initial_loss = compute_loss(model, u, t, method=method)
+            physics_loss, initial_loss = compute_loss(x, u, t, method=method)
             loss = w[0] * physics_loss + w[1] * initial_loss
+
+            true_loss = torch.sum((x[mask] - trajectory[mask])**2) / torch.sum(trajectory[mask]**2)
+            print(f'True loss: {true_loss.item():.4f}')
 
             optimizer.zero_grad()
             loss.backward()
