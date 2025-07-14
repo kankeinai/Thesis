@@ -37,10 +37,13 @@ print("Starting to create dataset")
 ds = MultiFunctionDatasetODE(
     m=200, 
     n_functions=100000,
-    function_types=['grf', 'polynomial', 'sine', 'linear', 'constant'],
-    grf_lb= -3,
-    grf_ub= 3,
+    function_types=['grf', 'polynomial', 'linear', 'constant'],
+    grf_lb= 0.02,
+    grf_ub= 0.5,
     architecture=architecture,
+    degree_range = (3, 8),
+    slope_range = (-2,2),
+    intercept_range=(-2,2),
     end_time=1,
     project=False,
     bound = [-1, 1],
@@ -50,5 +53,5 @@ ds = MultiFunctionDatasetODE(
     problem=problem_name[idx],
 )
 print("Starting to save dataset")
-path = save_dataset(ds, 'train', problem_name[idx], SEED)
+path = save_dataset(ds, 'test', problem_name[idx], SEED)
 

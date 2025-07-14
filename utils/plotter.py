@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import datetime
+from matplotlib.ticker import MultipleLocator, NullLocator
 
 def plot_validation_samples(data, epoch, folder, name, grid_rows=4, grid_cols=3):
     """
@@ -61,3 +63,89 @@ def plot_validation_samples(data, epoch, folder, name, grid_rows=4, grid_cols=3)
 
     plt.savefig(name, dpi=300, bbox_inches='tight')
     plt.close()  # Close to free memory
+
+def plot_analytics(losses, epoch, timestamp, last_timestamp, problem='unknown', architecture='unknown'):
+    """
+    Plot training and validation losses over epochs.
+    """
+    def plot_train_test(train_loss, test_loss, path, epoch, last_timestamp):
+        path = os.path.join(path, "train_test")
+        os.makedirs(path, exist_ok=True)
+        epochs = np.arange(1, len(train_loss) + 1)
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(epochs, train_loss,
+                label=f'Train (final={train_loss[-1]:.4e})',
+                linestyle='-', marker='o', markersize=4)
+        ax.plot(epochs, test_loss,
+                label=f'Test  (final={test_loss[-1]:.4e})',
+                linestyle='-', marker='s', markersize=4)
+
+        ax.set_yscale('log')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss (log scale)')
+        ax.set_title('Train vs. Test Loss')
+        ax.grid(which='both', ls='--', lw=0.5)
+        ax.legend(loc='upper right')
+
+        # --- exactly 5 evenly spaced ticks ---
+        num_epochs = len(epochs)
+        # if fewer than 5 epochs, just show them all
+        if num_epochs >= 5:
+            ticks = np.linspace(1, num_epochs, num=5, dtype=int)
+        else:
+            ticks = epochs
+        ax.set_xticks(ticks)
+        ax.xaxis.set_minor_locator(NullLocator())
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(path,
+                        f'epochs_{epoch}_{last_timestamp}_losses.png'),
+            dpi=300
+        )
+
+    def plot_physics_initial(physics_loss, initial_loss, path, epoch, last_timestamp):
+        path = os.path.join(path, "physics_initial")
+        os.makedirs(path, exist_ok=True)
+        epochs = np.arange(1, len(physics_loss) + 1)
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(epochs, initial_loss,
+                label=f'Initial (final={initial_loss[-1]:.4e})',
+                linestyle='-', marker='d', markersize=4)
+        ax.plot(epochs, physics_loss,
+                label=f'Physics (final={physics_loss[-1]:.4e})',
+                linestyle='-', marker='^', markersize=4)
+
+        ax.set_yscale('log')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Residual (log scale)')
+        ax.set_title('Physics & Initial Loss')
+        ax.grid(which='both', ls='--', lw=0.5)
+        ax.legend(loc='upper right')
+
+        # --- exactly 5 evenly spaced ticks ---
+        num_epochs = len(epochs)
+        if num_epochs >= 5:
+            ticks = np.linspace(1, num_epochs, num=5, dtype=int)
+        else:
+            ticks = epochs
+        ax.set_xticks(ticks)
+        ax.xaxis.set_minor_locator(NullLocator())
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(path,
+                        f'epochs_{epoch}_{last_timestamp}_loss.png'),
+            dpi=300
+        )
+   
+    folder = "analytics_plots/" + problem + '/'+ architecture+ '/'+timestamp
+    os.makedirs(folder, exist_ok=True)
+
+    print(f"Plotting L2 loss and test error for {problem} with architecture {architecture}")
+    plot_train_test(losses['train_loss'], losses['test_loss'], folder, epoch, last_timestamp)
+    plot_physics_initial(losses['physics_loss'], losses['initial_loss'], folder, epoch, last_timestamp)
+
+    

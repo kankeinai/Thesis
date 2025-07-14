@@ -31,37 +31,9 @@ class PR(nn.Module):
         self.weights_pole = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, dtype=torch.cfloat))
         self.weights_residue = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes1, dtype=torch.cfloat))
 
-        with torch.no_grad():
-            # constrain poles to have small negative real part
-            phase = torch.rand_like(self.weights_pole).angle()
-            radius = torch.rand_like(self.weights_pole.real) * 0.1
-            self.weights_pole.copy_(radius.exp() * torch.exp(1j * phase) * (-1.0))
-            # residues small random
-            self.weights_residue.mul_(0.1)
    
     def output_PR(self, lambda1,alpha, weights_pole, weights_residue):   
-        """
-        Compute transient (output_residue1) and steady-state (output_residue2)
-        frequency-domain contributions using the pole-residue formulation.
 
-        Parameters
-        ----------
-        lambda1 : torch.Tensor
-            Complex frequency tensor of shape (N, 1, 1, 1).
-        alpha : torch.Tensor
-            FFT of the input signal, shape (batch, in_channels, N).
-        weights_pole : torch.Tensor
-            Learned pole positions, shape (in_channels, out_channels, modes1).
-        weights_residue : torch.Tensor
-            Learned residues, shape (in_channels, out_channels, modes1).
-
-        Returns
-        -------
-        output_residue1 : torch.Tensor
-            Transient response contribution, shape (batch, out_channels, N).
-        output_residue2 : torch.Tensor
-            Steady-state contribution, shape (batch, out_channels, modes1).
-        """
         Hw=torch.zeros(weights_residue.shape[0],weights_residue.shape[0],weights_residue.shape[2],lambda1.shape[0], device=alpha.device, dtype=torch.cfloat)
         term1=torch.div(1,torch.sub(lambda1,weights_pole))
         Hw=weights_residue*term1
@@ -71,25 +43,8 @@ class PR(nn.Module):
         return output_residue1,output_residue2    
     
     def forward(self, x, t):
-        """
-        Forward pass: compute time-domain signal response by
-        combining transient (IFFT) and steady-state (exponential) parts.
 
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input signal, shape (batch, in_channels, N).
-        t : torch.Tensor
-            Time grid, shape (N,) or (batch, N).
-
-        Returns
-        -------
-        torch.Tensor
-            Output signal, shape (batch, out_channels, N).
-        """
-
-
-        dt = (t[1,0] - t[0,0]).item()   
+        dt = (t[1] - t[0]).item()   
         alpha = torch.fft.fft(x)
         lambda0=torch.fft.fftfreq(t.shape[0], dt)*2*np.pi*1j
         lambda1=lambda0.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
@@ -157,23 +112,22 @@ class LNO1d(nn.Module):
         torch.Tensor
             Predicted field, shape (batch, N, 1).
         """
-        x = torch.cat((x, t_grid), dim=-1)
+        x = torch.cat((x.unsqueeze(-1), t_grid.unsqueeze(-1)), dim=-1)
         x = self.fc0(x)
         x = x.permute(0, 2, 1)
 
-        t = t_grid[0:1].expand_as(t_grid)[0]
+        t = t_grid.squeeze(-1)[0, :]
 
         x1 = self.conv0(x, t)
         x2 = self.w0(x)
         x = x1 + x2
-        x = torch.sin(x)
 
         x = x.permute(0, 2, 1)
         x = self.fc1(x)
-        x = torch.sin(x)
+        x = F.gelu(x)
         x = self.fc2(x)
-        x = torch.sin(x)
+        x = F.gelu(x)
         x = self.fc3(x)
 
-        return x
+        return x.squeeze(-1)
     

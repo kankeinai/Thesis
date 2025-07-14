@@ -46,6 +46,7 @@ def custom_collate_ODE_fn(batch, architecture='deeponet'):
     elif architecture == 'deeponet':
         time_points = np.random.uniform(0, end_time, (num_domain, 1))
         initial_points = np.zeros((num_initial, 1))
+        final_points = np.full((num_initial, 1), end_time)
         input_at_times = np.zeros((batch_size, num_domain))
         
         for b, item in enumerate(batch):
