@@ -4,9 +4,14 @@ from utils.plotter import plot_validation_samples, plot_analytics
 import os
 from datetime import datetime
 import numpy as np
+from torch.utils.data import DataLoader
+from utils.data import DiskBackedODEDataset
 
 
-def gradient_deep_o_net(x, t, batch_size, n_points, dim_x):
+def gradient_automatic(x, t):
+    batch_size = x.shape[0]
+    n_points = t.shape[0]
+    dim_x = x.shape[1]
      # Physics loss
     dx = torch.zeros(batch_size, n_points, dim_x, device=t.device)
     # This loop is a bottleneck but i havent found a way to parallize this efficiently
@@ -266,3 +271,34 @@ def training(model, optimizer, scheduler, train_loader, test_loader, compute_los
             torch.save(checkpoint, f"{checkpoint_path}/{model_filename}")
 
     return model, losses
+
+def gradient_finite_difference(x, t):
+    dx_dt,  = torch.gradient(x, spacing=(t[0, :],), dim=1)
+    return dx_dt.squeeze(-1)
+
+
+def load_data(problem, architecture, train_name, test_name, seed, batch_size=128):
+    train_path = f'datasets/{problem}/{train_name}'
+    test_path = f'datasets/{problem}/{test_name}'
+    
+    train_ds = DiskBackedODEDataset(train_path, architecture=architecture)
+    test_ds = DiskBackedODEDataset(test_path, architecture=architecture)
+
+    # 2) Recreate your DataLoader exactly as before
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        generator=torch.Generator().manual_seed(seed),
+        collate_fn=train_ds.get_collate_fn()
+    )
+
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        generator=torch.Generator().manual_seed(seed),
+        collate_fn=test_ds.get_collate_fn()
+    )
+
+    return train_loader, test_loader

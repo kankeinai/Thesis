@@ -82,7 +82,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # ====================================
 modes = 16
 width = 4
-model = LNO1d(width,modes, hidden_layer=128).to(device)
+model = LNO1d(width,modes, hidden_layer=32).to(device)
 
 # ====================================
 # Training settings

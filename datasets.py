@@ -21,7 +21,7 @@ torch.backends.cudnn.benchmark = False
 
 
 problem_name = ['linear', 'oscillatory', 'polynomial_tracking', 'nonlinear', 'singular_arc']
-idx = 2
+idx = 3
 
 
 architecture = 'fno'
@@ -31,20 +31,22 @@ ds = MultiFunctionDatasetODE(
     m=200, 
     n_functions=100000,
     function_types=['grf', 'polynomial'],
-    grf_lb= 0.02,
+    grf_lb= 0.05,
     grf_ub= 0.5,
     architecture=architecture,
-    degree_range = (1, 8),
+    degree_range = (1, 5),
     slope_range = (-2,2),
     intercept_range=(-2,2),
+    coeff_range=(-3,3),
     end_time=1,
-    project=False,
-    bound = [-1, 1],
+    project=True,
+    bound = [-1.5, 1.5],
     num_domain=200,
     include_supervision=True,
     fraction_supervised=0.2,
     problem=problem_name[idx],
 )
 print("Starting to save dataset")
-path = save_dataset(ds, 'train', problem_name[idx], SEED)
+path = save_dataset(ds, 'train' \
+'', problem_name[idx], SEED)
 
