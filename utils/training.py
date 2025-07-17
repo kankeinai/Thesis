@@ -175,7 +175,8 @@ def training(model, optimizer, scheduler, train_loader, test_loader, compute_los
 
             dx_dt = gradient(x, t)
 
-            physics_loss = compute_loss['physics_loss']({'x': x, 'dx_dt': dx_dt, 'u': ut if architecture == 'deeponet' else u})
+            batch_size = u.shape[0]
+            physics_loss = compute_loss['physics_loss']({'x': x, 'dx_dt': dx_dt, 'u': ut if architecture == 'deeponet' else u, 't': t.squeeze(-1).repeat(batch_size, 1) if architecture == 'deeponet' else t})
             initial_loss = compute_loss['initial_loss']({'x': x0})
 
             batch_physics_losses.append(physics_loss.item())

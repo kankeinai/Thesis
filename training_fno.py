@@ -26,16 +26,32 @@ torch.backends.cudnn.benchmark = False
 compute_loss = {
     'linear': {
         'physics_loss': lambda args: torch.mean((args['dx_dt'] + args['x'] - args['u'])**2),
-        'initial_loss': lambda args: (args['x'] - 1.0).pow(2).mean(),
+        'initial_loss': lambda args: (args['x'-1] - 1.0).pow(2).mean()
+    },
+    'oscillatory': {
+        'physics_loss': lambda args: torch.mean((args['dx_dt']  - args['u'] - torch.cos(4*torch.pi*args['t']))**2),
+        'initial_loss': lambda args: (args['x'] - 0).pow(2).mean(),
+    },
+    'polynomial_tracking': {
+        'physics_loss': lambda args: torch.mean((args['dx_dt'] - args['u'])**2),
+        'initial_loss': lambda args: (args['x'] - 0).pow(2).mean(),
+    },
+    'nonlinear': {
+        'physics_loss': lambda args: torch.mean((args['dx_dt'] - 5/2*( - args['x'] + args['x']* args['u'] - args['u']**2))**2),
+        'initial_loss': lambda args: (args['x'] - 1).pow(2).mean(),
+    },
+    'singular_arc': {
+        'physics_loss': lambda args: torch.mean((args['dx_dt'] - (args['x']**2 +  args['u']))**2),
+        'initial_loss': lambda args: (args['x'] - 1).pow(2).mean(),
     }
 }
 
 problems = ['linear', 'oscillatory', 'polynomial_tracking', 'nonlinear', 'singular_arc']
-idx = 0
+idx = 2
 
 architecture = 'fno'
-train_path = f'datasets/{problems[idx]}/[Train]-seed-1234-date-2025-07-14.pt'
-test_path = f'datasets/{problems[idx]}/[Test]-seed-42-date-2025-07-14.pt'
+train_path = f'datasets/{problems[idx]}/[Train]-seed-1234-date-2025-07-15.pt'
+test_path = f'datasets/{problems[idx]}/[Test]-seed-42-date-2025-07-15.pt'
 
 train_ds = DiskBackedODEDataset(train_path, architecture=architecture)
 test_ds = DiskBackedODEDataset(test_path, architecture=architecture)
@@ -83,4 +99,4 @@ def gradient_fno(x, t):
     dx_dt,  = torch.gradient(x, spacing=(t[0, :],), dim=1)
     return dx_dt.squeeze(-1)
 
-training(model, optimizer, scheduler, train_loader, test_loader, compute_loss['linear'], gradient_fno, architecture='fno', num_epochs=num_epochs, problem=problems[idx], w=[1, 1])
+training(model, optimizer, scheduler, train_loader, test_loader, compute_loss[problems[idx]], gradient_fno, architecture='fno', num_epochs=num_epochs, problem=problems[idx], w=[1, 1])

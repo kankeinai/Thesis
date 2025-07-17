@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 import os
 from datetime import datetime
 
-SEED = 42
+SEED = 1234
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
@@ -21,7 +21,7 @@ torch.backends.cudnn.benchmark = False
 
 
 problem_name = ['linear', 'oscillatory', 'polynomial_tracking', 'nonlinear', 'singular_arc']
-idx = 1
+idx = 2
 
 
 architecture = 'fno'
@@ -29,7 +29,7 @@ print("Starting to create dataset")
 
 ds = MultiFunctionDatasetODE(
     m=200, 
-    n_functions=10000,
+    n_functions=100000,
     function_types=['grf', 'polynomial'],
     grf_lb= 0.02,
     grf_ub= 0.5,
@@ -42,9 +42,9 @@ ds = MultiFunctionDatasetODE(
     bound = [-1, 1],
     num_domain=200,
     include_supervision=True,
-    fraction_supervised=1,
+    fraction_supervised=0.2,
     problem=problem_name[idx],
 )
 print("Starting to save dataset")
-path = save_dataset(ds, 'test', problem_name[idx], SEED)
+path = save_dataset(ds, 'train', problem_name[idx], SEED)
 
