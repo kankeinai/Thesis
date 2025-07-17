@@ -1,8 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import datetime
-from matplotlib.ticker import MultipleLocator, NullLocator
+from matplotlib.ticker import NullLocator
 
 def plot_validation_samples(data, epoch, folder, name, grid_rows=4, grid_cols=3):
     """
@@ -64,7 +63,7 @@ def plot_validation_samples(data, epoch, folder, name, grid_rows=4, grid_cols=3)
     plt.savefig(name, dpi=300, bbox_inches='tight')
     plt.close()  # Close to free memory
 
-def plot_analytics(losses, epoch, timestamp, last_timestamp, problem='unknown', architecture='unknown'):
+def plot_analytics(losses, epoch, last_timestamp, folder):
     """
     Plot training and validation losses over epochs.
     """
@@ -76,15 +75,15 @@ def plot_analytics(losses, epoch, timestamp, last_timestamp, problem='unknown', 
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.plot(epochs, train_loss,
                 label=f'Train (final={train_loss[-1]:.4e})',
-                linestyle='-', marker='o', markersize=4)
+                linestyle='-', linewidth=1, marker='')
         ax.plot(epochs, test_loss,
-                label=f'Test  (final={test_loss[-1]:.4e})',
-                linestyle='-', marker='s', markersize=4)
+                label=f'Validation  (final={test_loss[-1]:.4e})',
+                linestyle='-', linewidth=1, marker='')
 
         ax.set_yscale('log')
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Loss (log scale)')
-        ax.set_title('Train vs. Test Loss')
+        ax.set_title('Train vs. Validation Loss')
         ax.grid(which='both', ls='--', lw=0.5)
         ax.legend(loc='upper right')
 
@@ -113,10 +112,10 @@ def plot_analytics(losses, epoch, timestamp, last_timestamp, problem='unknown', 
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.plot(epochs, initial_loss,
                 label=f'Initial (final={initial_loss[-1]:.4e})',
-                linestyle='-', marker='d', markersize=4)
+                linestyle='-', linewidth=1, marker='')
         ax.plot(epochs, physics_loss,
                 label=f'Physics (final={physics_loss[-1]:.4e})',
-                linestyle='-', marker='^', markersize=4)
+                linestyle='-',linewidth=1, marker='')
 
         ax.set_yscale('log')
         ax.set_xlabel('Epoch')
@@ -141,11 +140,40 @@ def plot_analytics(losses, epoch, timestamp, last_timestamp, problem='unknown', 
             dpi=300
         )
    
-    folder = "analytics_plots/" + problem + '/'+ architecture+ '/'+timestamp
     os.makedirs(folder, exist_ok=True)
 
-    print(f"Plotting L2 loss and test error for {problem} with architecture {architecture}")
     plot_train_test(losses['train_loss'], losses['test_loss'], folder, epoch, last_timestamp)
     plot_physics_initial(losses['physics_loss'], losses['initial_loss'], folder, epoch, last_timestamp)
 
+
+def plot_optimal_vs_predicted(t, u_pred, x_pred, u_true, x_true, title=None, savepath=None):
+    """
+    Plots predicted vs true optimal control and state trajectories (using provided true vectors).
+    """
+    t_np = t.detach().cpu().squeeze().numpy()
+    u_pred_np = u_pred.detach().cpu().squeeze().numpy()
+    x_pred_np = x_pred.detach().cpu().squeeze().numpy()
+
+    fig, axs = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
     
+    axs[0].plot(t_np, u_true, label='Optimal $u^*(t)$', color='black', linewidth=2)
+    axs[0].plot(t_np, u_pred_np, '--', label='Predicted $u(t)$', color='tab:blue')
+    axs[0].set_ylabel('Control $u(t)$')
+    axs[0].legend()
+    axs[0].grid(True)
+    
+    axs[1].plot(t_np, x_true, label='Optimal $x^*(t)$', color='black', linewidth=2)
+    axs[1].plot(t_np, x_pred_np, '--', label='Predicted $x(t)$', color='tab:orange')
+    axs[1].set_xlabel('Time $t$')
+    axs[1].set_ylabel('State $x(t)$')
+    axs[1].legend()
+    axs[1].grid(True)
+
+    if title:
+        fig.suptitle(title, fontsize=14)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95] if title else None)
+
+    if savepath:
+        plt.savefig(savepath, dpi=200)
+        print(f"Plot saved to {savepath}")
+    plt.show()

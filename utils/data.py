@@ -1,8 +1,7 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from scipy.integrate import solve_ivp, solve_bvp
-import warnings
+from scipy.integrate import solve_ivp
 from scipy.interpolate import CubicSpline
 import os
 from datetime import datetime
@@ -586,7 +585,7 @@ class DiskBackedODEDataset(Dataset):
     def get_collate_fn(self):
         return lambda batch: custom_collate_ODE_fn(batch, self.architecture)
     
-def save_dataset(ds, type_ds, problem_name, SEED):
+def save_dataset(ds, path, name):
 
     # 1. Stack data into arrays / tensors
     values = np.stack(ds.data)  # shape [N, m]
@@ -598,10 +597,9 @@ def save_dataset(ds, type_ds, problem_name, SEED):
 
     mask = ds.has_trajectory.astype(bool)  # shape [N]
 
-    os.makedirs(f'datasets/{problem_name}/', exist_ok=True)
+    os.makedirs(path, exist_ok=True)
 
-    name = f'[{type_ds.capitalize()}]-seed-{SEED}-date-{datetime.now().strftime("%Y-%m-%d")}.pt'
-    path = f'datasets/{problem_name}/{name}'
+    name = f'{name}-date-{datetime.now().strftime("%Y-%m-%d")}.pt'
    
     torch.save({
         'values':      torch.from_numpy(values),

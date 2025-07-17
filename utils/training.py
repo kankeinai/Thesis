@@ -1,150 +1,30 @@
 import torch
-import heapq
 from utils.plotter import plot_validation_samples, plot_analytics
 import os
 from datetime import datetime
 import numpy as np
-from torch.utils.data import DataLoader
-from utils.data import DiskBackedODEDataset
-
-
-def gradient_automatic(x, t):
-    batch_size = x.shape[0]
-    n_points = t.shape[0]
-    dim_x = x.shape[1]
-     # Physics loss
-    dx = torch.zeros(batch_size, n_points, dim_x, device=t.device)
-    # This loop is a bottleneck but i havent found a way to parallize this efficiently
-    for b in range(batch_size):
-        # Compute gradients for each batch independently
-        dx[b] = torch.autograd.grad(x[b], t, torch.ones_like(x[b]), create_graph=True)[0]
-
-    dx_dt = dx[:,:,0]
-
-    return dx_dt
-
-def gradient_deep_o_net(x, t):
-     # Physics loss
-    batch_size = x.shape[0]
-    n_points = t.shape[0]
-    dim_x = x.shape[1]
-
-    dx = torch.zeros(batch_size, n_points, dim_x, device=t.device)
-    # This loop is a bottleneck but i havent found a way to parallize this efficiently
-    for b in range(batch_size):
-        # Compute gradients for each batch independently
-        dx[b] = torch.autograd.grad(x[b], t, torch.ones_like(x[b]), create_graph=True)[0]
-
-    dx_dt = dx[:,:,0]
-
-    return dx_dt
-
-def relative_error(prediction: torch.Tensor,
-                   trajectory: torch.Tensor,
-                   dim: int = None,
-                   eps: float = 1e-8) -> torch.Tensor:
-    
-    num = torch.sqrt(torch.sum((prediction - trajectory) ** 2, dim=dim))
-    den = torch.sqrt(torch.sum(trajectory ** 2, dim=dim)).clamp(min=eps)
-    return num / den
-
-
-import heapq
+import time
 import torch
-
-def calculate_test_errors(model: torch.nn.Module,
-                          test_loader: torch.utils.data.DataLoader,
-                          top_k: int = None,
-                          device: torch.device = None, architecture='deeponet') -> dict:
-    """
-    Compute mean/std of your relative error over the test set;
-    optionally also return the top‐k worst errors (with inputs/targets/preds).
-    
-    If top_k is None or <= 0, skips all top‐k bookkeeping.
-    """
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model.to(device).eval()
-
-    # Pre‐compute uniform time grid
-    if architecture == 'deeponet':
-        t_uniform = torch.linspace(0, 1, test_loader.dataset.m, device=device).unsqueeze(1)
-
-    running_sum = 0.0
-    running_sum_sq = 0.0
-    total_samples = 0
-
-    # only initialize heap if top_k requested
-    if top_k and top_k > 0:
-        top_k_heap = []  # will store (error, idx, u, traj, pred)
-    sample_idx = 0
-    all_errors = []
-
-    with torch.no_grad():
-        for batch in test_loader:
-            if architecture == 'deeponet':
-                u, t, t0, ut, trajectory, mask = batch
-                t_uniform = t_uniform.to(device)
-                pred = model(u, t_uniform)
-            else:
-                u, t,  trajectory, mask = batch
-                pred = model(u, t)
-            errors = relative_error(pred, trajectory,
-                                    dim=list(range(1, trajectory.ndim)))
-
-            batch_errors = errors.cpu()
-            all_errors.append(batch_errors)
-            running_sum += batch_errors.sum().item()
-            running_sum_sq += (batch_errors ** 2).sum().item()
-            total_samples += batch_errors.numel()
-
-            # only do top‐k tracking if requested
-            if top_k and top_k > 0:
-                for i, err_val in enumerate(batch_errors):
-                    err = err_val.item()
-                    if len(top_k_heap) < top_k:
-                        heapq.heappush(top_k_heap, (err, sample_idx + i,
-                                                   u[i].cpu(), trajectory[i].cpu(), pred[i].cpu()))
-                    elif err > top_k_heap[0][0]:
-                        heapq.heapreplace(top_k_heap, (err, sample_idx + i,
-                                                       u[i].cpu(), trajectory[i].cpu(), pred[i].cpu()))
-            sample_idx += batch_errors.size(0)
-
-    errors_tensor = torch.cat(all_errors)
-    mean_error = errors_tensor.mean()
-    std_error = errors_tensor.std()
-
-    result = {
-        'mean_error': mean_error,
-        'std_error': std_error,
-    }
-    
-
-    # unpack top‐k only if we did the work
-    if top_k and top_k > 0:
-        # reverse‐sort so worst first
-        top_k_heap.sort(reverse=True)
-        result.update({
-            'topk_indices': torch.tensor([item[1] for item in top_k_heap]),
-            'topk_errors':  torch.tensor([item[0] for item in top_k_heap]),
-            'topk_u':       [item[2] for item in top_k_heap],
-            'topk_trajectory':   [item[3] for item in top_k_heap],
-            'topk_prediction':   [item[4] for item in top_k_heap],
-        })
-
-    return result
+from utils.metrics import calculate_test_errors, relative_error
+from utils.scripts import save_model, check_that_folder_exists
 
 
-def training(model, optimizer, scheduler, train_loader, test_loader, compute_loss, gradient, num_epochs=1000, architecture="deeponet", problem="linear", w=[1, 1], save = 10):
+def training(model, optimizer, scheduler, train_loader, test_loader, compute_loss, gradient, num_epochs=1000, architecture="deeponet", problem="linear", w=[1, 1], save_plot = 20, save=100, early_stopping_patience=100, min_epoch=0,  checkpoint_path=None, plots_folder=None, analytics_folder=None, time_folder=None):
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    checkpoint_path = f'trained_models/{problem}/{architecture}/attempt_started{timestamp}'
-    plots_folder = f'plots/{problem}/{architecture}/{timestamp}'
 
-    if not os.path.exists(checkpoint_path):
-        os.makedirs(checkpoint_path)
-    if not os.path.exists(plots_folder):
-        os.makedirs(plots_folder)
+    if checkpoint_path is None:
+        checkpoint_path = f'trained_models/{problem}/{architecture}/attempt_started{timestamp}/'
+    if plots_folder is None:
+        plots_folder = f'plots/{problem}/{architecture}/attempt_started{timestamp}/'
+    if analytics_folder is None:
+        analytics_folder = f'analytics_plots/{problem}/{architecture}/attempt_started{timestamp}/'
+    if time_folder is None:
+        time_folder = f'computation_time/{problem}/{architecture}/attempt_started{timestamp}/'
+
+    best_model_path = f'trained_models/{problem}/{architecture}/attempt_started{timestamp}/best/'
+
+    check_that_folder_exists([checkpoint_path, plots_folder, analytics_folder, time_folder, best_model_path])
 
     losses = {
         'train_loss': [],
@@ -152,9 +32,17 @@ def training(model, optimizer, scheduler, train_loader, test_loader, compute_los
         'initial_loss': [],
         'test_loss': []
     }
-    
-    for epoch in range(num_epochs):
 
+    best_phys_loss = float('inf')
+    epochs_since_improvement = 0
+    epoch_times = []
+
+    prev_lr = optimizer.param_groups[0]['lr']
+    
+    for epoch in range(min_epoch, min_epoch + num_epochs + 1):
+
+
+        epoch_start = time.time()
         model.train()
         batch_true_losses = []
         batch_physics_losses = []
@@ -190,7 +78,6 @@ def training(model, optimizer, scheduler, train_loader, test_loader, compute_los
             # Total loss
             loss = w[0]*physics_loss + w[1]*initial_loss
 
-            
             loss.backward()
             optimizer.step()
 
@@ -201,11 +88,14 @@ def training(model, optimizer, scheduler, train_loader, test_loader, compute_los
                     relative_error_train = relative_error(prediction, trajectory[labels_mask])
                     true_loss = relative_error_train.item()
                     batch_true_losses.append(true_loss)
-        
-        last_timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        scheduler.step()
 
-        if (epoch+1) % save == 0:
+        core_end = time.time()
+        epoch_time = core_end - epoch_start
+        epoch_times.append(epoch_time)
+
+        last_timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+
+        if (epoch+1) % save_plot == 0:
             test_errors = calculate_test_errors(model, test_loader, top_k=12, device=u.device, architecture=architecture)
             plot_name = f'epoch_{epoch+1}_test_predictions.png'
             
@@ -236,69 +126,40 @@ def training(model, optimizer, scheduler, train_loader, test_loader, compute_los
         initial_loss = np.mean(batch_initial_losses)
         true_loss = np.mean(batch_true_losses) 
 
-        old_lrs = [g['lr'] for g in optimizer.param_groups]
-        scheduler.step(physics_loss)
-        new_lrs = [g['lr'] for g in optimizer.param_groups]
-
-        if new_lrs != old_lrs:
-            print(f"Epoch {epoch:03d}: reducing LR → {new_lrs}")
-
         losses['train_loss'].append(true_loss)
         losses['physics_loss'].append(physics_loss)
         losses['initial_loss'].append(initial_loss)
         losses['test_loss'].append(mean_error.item())
 
+        if (epoch+1) % save_plot == 0:
+            plot_analytics(losses, epoch+1, last_timestamp, analytics_folder)
 
-        if (epoch+1) % save == 0:
-            plot_analytics(losses, epoch+1, timestamp, last_timestamp, problem=problem, architecture=architecture)
-        
-        print(f'Epoch [{epoch+1}/{num_epochs}], '
+        print(f'Epoch [{epoch+1}/{min_epoch+num_epochs}], '
               f'Physics loss: {physics_loss:.4f}, Initial loss: {initial_loss:.4f}, '
               f'Train loss: {true_loss:.4f}, Test loss: {mean_error:.4f} ± {std_error:.4f}, '
               f'time: {datetime.now().time()}')
-
-
-        # save model every 10th
+        
         if (epoch + 1) % save == 0:
-            model_filename = f'epoch[{epoch+1}]_model_time_[{last_timestamp}]_loss_[{loss.item():.4f}].pth'
+            np.save(os.path.join(time_folder, f"time_epoch_{epoch+1}.npy"), np.array(epoch_times))
+            print(f"Scheduled saving of model at epoch: {epoch + 1} with validation loss {mean_error.item():.4f}")
+            save_model(model, optimizer, epoch, timestamp, mean_error, checkpoint_path)
 
-            # save optimizer
-            checkpoint = {
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'epoch': epoch + 1
-            }
-            torch.save(checkpoint, f"{checkpoint_path}/{model_filename}")
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
+
+        if current_lr != prev_lr:
+            print(f"Epoch {epoch+1}: learning rate changed to {current_lr:.6e}")
+            prev_lr = current_lr
+
+        if physics_loss.item() <  best_phys_loss - 1e-6:
+            best_phys_loss = physics_loss.item()
+            epochs_since_improvement = 0
+            save_model(model, optimizer, epoch, timestamp, mean_error, best_model_path, model_filename =f"best_model_phys-{physics_loss.item()}-val{mean_error.item()}.pt")
+            print(f"Epoch {epoch+1}: saving model with validation loss {mean_error.item():.4f} physics loss {physics_loss.item()}")
+        else:
+            epochs_since_improvement += 1
+            if epochs_since_improvement > early_stopping_patience:
+                print(f"Early stopping at epoch {epoch+1}")
+                break
 
     return model, losses
-
-def gradient_finite_difference(x, t):
-    dx_dt,  = torch.gradient(x, spacing=(t[0, :],), dim=1)
-    return dx_dt.squeeze(-1)
-
-
-def load_data(problem, architecture, train_name, test_name, seed, batch_size=128):
-    train_path = f'datasets/{problem}/{train_name}'
-    test_path = f'datasets/{problem}/{test_name}'
-    
-    train_ds = DiskBackedODEDataset(train_path, architecture=architecture)
-    test_ds = DiskBackedODEDataset(test_path, architecture=architecture)
-
-    # 2) Recreate your DataLoader exactly as before
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        generator=torch.Generator().manual_seed(seed),
-        collate_fn=train_ds.get_collate_fn()
-    )
-
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        generator=torch.Generator().manual_seed(seed),
-        collate_fn=test_ds.get_collate_fn()
-    )
-
-    return train_loader, test_loader

@@ -1,10 +1,13 @@
+
 import torch
 import random
 import numpy as np
-from models.lno import LNO1d
-from utils.training import  training, load_data, gradient_finite_difference
-from torch.optim.lr_scheduler import  StepLR
-from utils.settings import compute_loss_uniform_grid
+from models.fno import LNO1d
+import torch.optim as optim
+from utils.training import training
+from utils.scripts import load_data
+from torch.optim.lr_scheduler import StepLR
+from utils.settings import compute_loss_uniform_grid, datasets, gradient_finite_difference
 
 SEED = 69
 random.seed(SEED)
@@ -15,10 +18,8 @@ torch.cuda.manual_seed_all(SEED)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
             
-
-
 problems = ['linear', 'oscillatory', 'polynomial_tracking', 'nonlinear', 'singular_arc']
-idx = 1
+idx = 0
 compute_loss = compute_loss_uniform_grid[problems[idx]]
 
 architecture = 'lno'
@@ -26,10 +27,9 @@ architecture = 'lno'
 train_loader, test_loader = load_data(
     problems[idx],
     architecture,
+    datasets[problems[idx]]['train'],
+    datasets[problems[idx]]['validation'],
     SEED,
-    batch_size=128,
-    train_path=f'[Train]-seed-1234-date-2025-07-15.pt',
-    test_path=f'[Test]-seed-42-date-2025-07-15.pt'
 )
 
 # Specify device
@@ -40,17 +40,25 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # ====================================
 modes = 16
 width = 4
-model = LNO1d(width, modes, hidden_layer=32).to(device)
+hidden_layer = 128 
+
+model = LNO1d(width, modes, hidden_layer=hidden_layer).to(device)
 
 # ====================================
 # Training settings
 # ====================================
-stepsize = 50
-learning_rate = 0.0001
-num_epochs = 1000
+#Initialize Optimizer
+lr = 0.0001
+print(f"Using learning rate: {lr}")
+epochs = 2000
 
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
-scheduler = StepLR(optimizer, step_size=stepsize, gamma=0.5)
+optimizer = optim.Adam(model.parameters(), lr=lr)
+
+scheduler = StepLR(
+    optimizer,
+    step_size=100,   # decay LR every 50 epochs (set as you like)
+    gamma=0.5,      # halve the LR
+)
 
 
-training(model, optimizer, scheduler, train_loader, test_loader, compute_loss, gradient_finite_difference, architecture='lno', num_epochs=num_epochs, problem=problems[idx], w=[1, 1])
+training(model, optimizer, scheduler, train_loader, test_loader, compute_loss, gradient_finite_difference, architecture=architecture, num_epochs=epochs, save = 10, save_plot = 10, problem=problems[idx], w=[1, 1])
