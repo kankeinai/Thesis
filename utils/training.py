@@ -154,7 +154,7 @@ def training(model, optimizer, scheduler, train_loader, test_loader, compute_los
         if physics_loss.item() <  best_phys_loss - 1e-6:
             best_phys_loss = physics_loss.item()
             epochs_since_improvement = 0
-            save_model(model, optimizer, epoch, timestamp, mean_error, best_model_path, model_filename =f"best_model_phys-{physics_loss.item()}-val{mean_error.item()}.pt")
+            save_model(model, optimizer, epoch, timestamp, mean_error, best_model_path, model_filename =f"best_model.pt")
             print(f"Epoch {epoch+1}: saving model with validation loss {mean_error.item():.4f} physics loss {physics_loss.item()}")
         else:
             epochs_since_improvement += 1

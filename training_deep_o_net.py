@@ -20,7 +20,7 @@ torch.backends.cudnn.benchmark = False
 
 problems = ['linear', 'oscillatory', 'polynomial_tracking', 'nonlinear', 'singular_arc']
 
-idx = 3
+idx = 4
 compute_loss = compute_loss_random_grid[problems[idx]]
 
 architecture = 'deeponet'
@@ -34,7 +34,6 @@ train_loader, test_loader = load_data(
 
 # Specify device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
 # Model Parameters
 m = 200         # sensor size (branch input size)
 n_hid = 200     # layer's hidden sizes
@@ -58,8 +57,7 @@ optimizer = optim.Adam(model.parameters(), lr=lr)
 
 scheduler = StepLR(
     optimizer,
-    step_size=100,   # decay LR every 50 epochs (set as you like)
-    gamma=0.9,      # halve the LR
+    step_size=100,   
+    gamma=0.9,     
 )
-
 training(model, optimizer, scheduler, train_loader, test_loader, compute_loss, gradient_automatic, num_epochs=epochs, problem=problems[idx], w=[1, 1])
