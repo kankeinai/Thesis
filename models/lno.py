@@ -70,7 +70,7 @@ class LNO1d(nn.Module):
     One-dimensional Lagrangian Neural Operator (LNO) combining
     local MLP lift, frequency-domain PR block, and pointwise conv.
     """
-    def __init__(self, width, modes, hidden_layer=256):
+    def __init__(self, width, modes, hidden_layer=128):
         """
         Initialize the LNO1d model.
 
@@ -93,8 +93,7 @@ class LNO1d(nn.Module):
 
 
         self.fc1 = nn.Linear(self.width, hidden_layer)
-        self.fc2 = nn.Linear(hidden_layer, 16)
-        self.fc3 = nn.Linear(16, 1)
+        self.fc2 = nn.Linear(hidden_layer, 1)
 
     def forward(self, x, t_grid):
         """
@@ -124,10 +123,8 @@ class LNO1d(nn.Module):
 
         x = x.permute(0, 2, 1)
         x = self.fc1(x)
-        x = F.gelu(x)
+        x = F.silu(x)
         x = self.fc2(x)
-        x = F.gelu(x)
-        x = self.fc3(x)
 
         return x.squeeze(-1)
     

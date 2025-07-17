@@ -1,3 +1,14 @@
-/thesis_src/
-/images
 /datasets
+/.venv
+*.pyc
+__pycache__/
+*.log
+*.tmp
+*.bak
+*.swp
+*.DS_Store
+.gitignore
+
+analytics_plots/
+plots/
+trained_models/
