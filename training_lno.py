@@ -2,7 +2,7 @@
 import torch
 import random
 import numpy as np
-from models.fno import LNO1d
+from models.lno import LNO1d, LNO1d_extended
 import torch.optim as optim
 from utils.training import training
 from utils.scripts import load_data
@@ -19,13 +19,12 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
             
 problems = ['linear', 'oscillatory', 'polynomial_tracking', 'nonlinear', 'singular_arc']
-idx = 0
+idx = 3
 compute_loss = compute_loss_uniform_grid[problems[idx]]
 
 architecture = 'lno'
 
 train_loader, test_loader = load_data(
-    problems[idx],
     architecture,
     datasets[problems[idx]]['train'],
     datasets[problems[idx]]['validation'],
@@ -38,27 +37,26 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # ====================================
 # Model definition
 # ====================================
-modes = 16
+modes = [8, 8]
 width = 4
-hidden_layer = 128 
+hidden_layer = 32
 
-model = LNO1d(width, modes, hidden_layer=hidden_layer).to(device)
-
+model = LNO1d_extended(width, modes, activation = "silu", active_last=True, depth=2, hidden_layer=hidden_layer).to(device)
 # ====================================
 # Training settings
 # ====================================
 #Initialize Optimizer
-lr = 0.0001
+lr = 0.001
 print(f"Using learning rate: {lr}")
-epochs = 2000
+epochs = 10000
 
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
 scheduler = StepLR(
     optimizer,
-    step_size=100,   # decay LR every 50 epochs (set as you like)
-    gamma=0.5,      # halve the LR
+    step_size=25,   # decay LR every 50 epochs (set as you like)
+    gamma=0.9,      # halve the LR
 )
 
 
-training(model, optimizer, scheduler, train_loader, test_loader, compute_loss, gradient_finite_difference, architecture=architecture, num_epochs=epochs, save = 10, save_plot = 10, problem=problems[idx], w=[1, 1])
+training(model, optimizer, scheduler, train_loader, test_loader, compute_loss, gradient_finite_difference, architecture=architecture, num_epochs=epochs, finetuning = False, save = 10, save_plot = 10, early_stopping_patience=100, problem=problems[idx], w=[1, 1, 0.01])

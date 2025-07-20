@@ -5,6 +5,7 @@ from scipy.integrate import solve_ivp
 from scipy.interpolate import CubicSpline
 import os
 from datetime import datetime
+import random
 
 def custom_collate_ODE_fn(batch, architecture='deeponet'):
     """
@@ -398,6 +399,7 @@ class MultiFunctionDatasetODE(Dataset):
             should_supervise: Whether to compute trajectory for this function
         """
         print(f"generating function {func_type}")
+        print(random.random())
         # Generate the control function and its analytical form
         if func_type == 'grf':
             grid_size = np.random.randint(self.m // 2, self.m * 2)
@@ -610,7 +612,7 @@ def save_dataset(ds, path, name):
         'num_initial': ds.num_initial,
         'end_time':    ds.end_time,
         'm':           ds.m
-    }, path)
+    }, os.path.join(path, name))
 
     print(f"Dataset saved to {path}")
     return path

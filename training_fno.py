@@ -20,14 +20,13 @@ torch.backends.cudnn.benchmark = False
             
 
 problems = ['linear', 'oscillatory', 'polynomial_tracking', 'nonlinear', 'singular_arc']
-idx = 0
+idx = 4
 compute_loss = compute_loss_uniform_grid[problems[idx]]
 
 
 architecture = 'fno'
 
 train_loader, test_loader = load_data(
-    problems[idx],
     architecture,
     datasets[problems[idx]]['train'],
     datasets[problems[idx]]['validation'],
@@ -41,18 +40,23 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # ====================================
 
 modes = 32
-width = 16
-depth = 4
-hidden_layer = 128
+width = 64
+depth = 6
+hidden_layer = 256
 
-model = FNO1d(modes=modes, width=width, depth=depth, activation="silu", hidden_layer = hidden_layer).to(device)
-
+model = FNO1d(
+    modes=modes,
+    width=width,
+    depth=depth,
+    activation="silu",
+    hidden_layer=hidden_layer
+).to(device)
 # ====================================
 # Training settings
 # ====================================
 
 #Initialize Optimizer
-lr = 0.0001
+lr = 0.001
 print(f"Using learning rate: {lr}")
 epochs = 1000
 
@@ -60,8 +64,8 @@ optimizer = optim.Adam(model.parameters(), lr=lr)
 
 scheduler = StepLR(
     optimizer,
-    step_size=100,   # decay LR every 50 epochs (set as you like)
-    gamma=0.5,      # halve the LR
+    step_size=15,   # decay LR every 50 epochs (set as you like)
+    gamma=0.9,      # halve the LR
 )
 
-training(model, optimizer, scheduler, train_loader, test_loader, compute_loss, gradient_finite_difference, architecture=architecture, num_epochs=epochs, save = 10, save_plot = 10, problem=problems[idx], w=[1, 1])
+training(model, optimizer, scheduler, train_loader, test_loader, compute_loss, gradient_finite_difference, architecture=architecture, num_epochs=epochs, save = 10, early_stopping_patience=20, save_plot = 10, problem=problems[idx], w=[1, 1])

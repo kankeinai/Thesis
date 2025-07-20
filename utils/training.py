@@ -5,11 +5,12 @@ from datetime import datetime
 import numpy as np
 import time
 import torch
+import torch.nn.functional as F
 from utils.metrics import calculate_test_errors, relative_error
 from utils.scripts import save_model, check_that_folder_exists
 
 
-def training(model, optimizer, scheduler, train_loader, test_loader, compute_loss, gradient, num_epochs=1000, architecture="deeponet", problem="linear", w=[1, 1], save_plot = 20, save=100, early_stopping_patience=100, min_epoch=0,  checkpoint_path=None, plots_folder=None, analytics_folder=None, time_folder=None):
+def training(model, optimizer, scheduler, train_loader, test_loader, compute_loss, gradient, num_epochs=1000, finetuning = False, architecture="deeponet",clipping=False, problem="linear", w=[1, 1], save_plot = 20, save=100, early_stopping_patience=100, min_epoch=0,  checkpoint_path=None, plots_folder=None, analytics_folder=None, time_folder=None):
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -49,7 +50,6 @@ def training(model, optimizer, scheduler, train_loader, test_loader, compute_los
         batch_initial_losses = []
 
         for batch in train_loader:
-
             if architecture == 'deeponet':
                 u, t, t0, ut, trajectory, mask = batch
                 t.requires_grad_(True)
@@ -58,7 +58,6 @@ def training(model, optimizer, scheduler, train_loader, test_loader, compute_los
                 u, t, trajectory, mask = batch
 
             optimizer.zero_grad()
-
             x = model(u, t)
 
             if architecture == 'deeponet':
@@ -67,27 +66,51 @@ def training(model, optimizer, scheduler, train_loader, test_loader, compute_los
                 x0 = x[:, 0]
 
             dx_dt = gradient(x, t)
-
             batch_size = u.shape[0]
+
+            # Unsupervised losses
             physics_loss = compute_loss['physics_loss']({'x': x, 'dx_dt': dx_dt, 'u': ut if architecture == 'deeponet' else u, 't': t.squeeze(-1).repeat(batch_size, 1) if architecture == 'deeponet' else t})
             initial_loss = compute_loss['initial_loss']({'x': x0})
 
             batch_physics_losses.append(physics_loss.item())
             batch_initial_losses.append(initial_loss.item())
-            
-            # Total loss
-            loss = w[0]*physics_loss + w[1]*initial_loss
+
+            if finetuning == False:
+
+                # --------- DATA LOSS (Supervised part) -----------
+                labels_mask = mask.bool()
+
+                with torch.no_grad():
+                    labels_mask = mask.bool()
+                    if labels_mask.any():
+                        prediction = model(u[labels_mask], t_uniform if architecture=="deeponet" else t[labels_mask])
+                        relative_error_train = relative_error(prediction, trajectory[labels_mask])
+                        true_loss = relative_error_train.item()
+                        batch_true_losses.append(true_loss)
+
+                # Total loss: add data loss, optionally weighted by w[2]
+                loss = w[0]*physics_loss + w[1]*initial_loss
+            else:
+                    # --- SUPERVISED DATA LOSS: Add this block ---
+                labels_mask = mask.bool()
+                data_loss = 0.0  # Default if no labels present
+                if labels_mask.any():
+                    # Predict for only supervised samples (could also do for all, mask loss)
+                    pred = model(u[labels_mask], t_uniform if architecture=="deeponet" else t[labels_mask])
+                    # Supervised loss: mean squared error (can also use relative if you prefer)
+                    data_loss = F.mse_loss(pred, trajectory[labels_mask])
+                    batch_true_losses.append(data_loss.item())
+                
+                # --- TOTAL LOSS: Add data_loss with weight w[2] (new arg in w list) ---
+                loss = w[0]*physics_loss + w[1]*initial_loss + w[2]*data_loss
+
 
             loss.backward()
-            optimizer.step()
 
-            with torch.no_grad():
-                labels_mask = mask.bool()
-                if labels_mask.any():
-                    prediction = model(u[labels_mask], t_uniform if architecture=="deeponet" else t[labels_mask])
-                    relative_error_train = relative_error(prediction, trajectory[labels_mask])
-                    true_loss = relative_error_train.item()
-                    batch_true_losses.append(true_loss)
+            if clipping:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+            optimizer.step()
 
         core_end = time.time()
         epoch_time = core_end - epoch_start

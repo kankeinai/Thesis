@@ -1,25 +1,31 @@
 import torch
+import numpy as np
 
 compute_loss_uniform_grid = {
     'linear': {
         'physics_loss': lambda args: torch.mean((args['dx_dt'] + args['x'] - args['u'])**2),
-        'initial_loss': lambda args: (args['x'-1] - 1.0).pow(2).mean()
+        'initial_loss': lambda args: (args['x'] - 1.0).pow(2).mean(),
+        'boundary_loss':lambda args: 0,
     },
     'oscillatory': {
         'physics_loss': lambda args: torch.mean((args['dx_dt']  - args['u'] - torch.cos(4*torch.pi*args['t']))**2),
         'initial_loss': lambda args: (args['x'] - 0).pow(2).mean(),
+        'boundary_loss': lambda args: (args['x'] - 0).pow(2).mean(),
     },
     'polynomial_tracking': {
         'physics_loss': lambda args: torch.mean((args['dx_dt'] - args['u'])**2),
         'initial_loss': lambda args: (args['x'] - 0).pow(2).mean(),
+        'boundary_loss':lambda args: 0,
     },
     'nonlinear': {
         'physics_loss': lambda args: torch.mean((args['dx_dt'] - 5/2*( - args['x'] + args['x']* args['u'] - args['u']**2))**2),
         'initial_loss': lambda args: (args['x'] - 1).pow(2).mean(),
+        'boundary_loss':lambda args: 0,
     },
     'singular_arc': {
         'physics_loss': lambda args: torch.mean((args['dx_dt'] - (args['x']**2 +  args['u']))**2),
         'initial_loss': lambda args: (args['x'] - 1).pow(2).mean(),
+        'boundary_loss': lambda args: (args['x'] - 0).pow(2).mean(),
     }
 }
 
@@ -31,6 +37,7 @@ compute_loss_random_grid = {
     'oscillatory': {
         'physics_loss': lambda args: torch.mean((args['dx_dt']  - args['u'] - torch.cos(4*torch.pi*args['t']))**2),
         'initial_loss': lambda args: (args['x'] - torch.zeros_like(args['x'])).pow(2).mean(),
+        'boundary_loss': lambda args: (args['x'] - torch.zeros_like(args['x'])).pow(2).mean(),
     },
     'polynomial_tracking': {
         'physics_loss': lambda args: torch.mean((args['dx_dt'] - args['u'])**2),
@@ -43,6 +50,7 @@ compute_loss_random_grid = {
     'singular_arc': {
         'physics_loss': lambda args: torch.mean((args['dx_dt'] - (args['x']**2 +  args['u']))**2),
         'initial_loss': lambda args: (args['x'] - torch.ones_like(args['x'])).pow(2).mean(),
+        'boundary_loss': lambda args: (args['x'] - torch.zeros_like(args['x'])).pow(2).mean(),
     }
 }
 
@@ -71,33 +79,37 @@ datasets = {
 
 optimal_solutions = {
     'linear':{
-        'x' : lambda args: 0,
-        'u' : lambda args: 0,
+        'x' : lambda args: (np.sqrt(2) * np.cosh(np.sqrt(2) * (args['t'] - 1)) - np.sinh(np.sqrt(2) * (args['t'] - 1)))/(np.sqrt(2) * np.cosh(np.sqrt(2)) + np.sinh(np.sqrt(2))),
+        'u' : lambda args: (np.sinh(np.sqrt(2) * (args['t'] - 1)))/( np.sqrt(2) * np.cosh(np.sqrt(2)) + np.sinh(np.sqrt(2))),
     },
-    'oscillatory':{
-        'x' : lambda args: 0,
-        'u' : lambda args: 0,
-    },
-    'polynomial_tracking':{
-        'x' : lambda args: 0,
-        'u' :lambda args: 0,
-    },
+   'oscillatory': {
+    'x': lambda args: (
+        (4 * np.pi / (16 * np.pi**2 + 1)) * np.sin(4 * np.pi * args['t'])
+    ),
+    'u': lambda args: (
+        -1 / (16 * np.pi**2 + 1) * np.cos(4 * np.pi * args['t'])
+    )
+},
+    'polynomial_tracking': {
+    'x': lambda args: -0.8862 * np.exp(args['t']) - 1.1138 * np.exp(-args['t']) + args['t']**2 + 2,
+    'u': lambda args: -0.8862 * np.exp(args['t']) + 1.1138 * np.exp(-args['t']) + 2 * args['t'],
+},
     'nonlinear':{
-        'x' : lambda args: 0,
-        'u' : lambda args: 0,
+        'x' : lambda args: 4/(1+3*np.exp(5*args['t']/2)),
+        'u' : lambda args: 2/(1+3*np.exp(5*args['t']/2)),
     },
     'singular_arc':{
-        'x' : lambda args: 0,
-        'u' : lambda args: 0,
+        'x' : lambda args: (1-args['t'])/(1+args['t']),
+        'u' : lambda args: -2/(1+args['t'])**2 - ( (1-args['t'])/(1+args['t']))**2,
     }
 }
 
 objective_functions = {
-    'linear':  lambda args: 0,
-    'oscillatory': lambda args: 0,
-    'polynomial_tracking': lambda args: 0,
-    'nonlinear': lambda args: 0,
-    'singular_arc': lambda args: 0
+    'linear':  lambda args: 1/2*torch.trapz((args['x']**2 + args['u']**2).squeeze(), args['t'].squeeze()) ,
+    'oscillatory': lambda args: 1/2*torch.trapz((args['x']**2 + args['u']**2).squeeze(), args['t'].squeeze()) ,
+    'polynomial_tracking': lambda args: torch.trapz(((args['x']-args['t']**2)**2 + args['u']**2).squeeze(), args['t'].squeeze()),
+    'nonlinear': lambda args: -args['x'][-1],
+    'singular_arc': lambda args: torch.mean(torch.trapz((args['u']**2).squeeze(), args['t'].squeeze())) 
 }
 
 

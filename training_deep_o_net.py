@@ -20,7 +20,7 @@ torch.backends.cudnn.benchmark = False
 
 problems = ['linear', 'oscillatory', 'polynomial_tracking', 'nonlinear', 'singular_arc']
 
-idx = 4
+idx = 3
 compute_loss = compute_loss_random_grid[problems[idx]]
 
 architecture = 'deeponet'
@@ -34,6 +34,7 @@ train_loader, test_loader = load_data(
 
 # Specify device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# Model Parameters
 # Model Parameters
 m = 200         # sensor size (branch input size)
 n_hid = 200     # layer's hidden sizes

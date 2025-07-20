@@ -10,11 +10,11 @@ def relative_error(prediction: torch.Tensor,
     den = torch.norm(target, p=2, dim=dim).clamp(min=eps)
     return num / den
 
-def calculate_true_error(x, u, t, optimal_x_fn, optimal_u_fn, device):
+def calculate_true_error(x, u, t, optimal_x, optimal_u, device):
     # x, u: [1, m] tensors, t: [1, m] tensor
     t_flat = t[0].detach().cpu().numpy()
-    true_u = torch.tensor(optimal_u_fn(t_flat), dtype=torch.float32, device=device).unsqueeze(0)
-    true_x = torch.tensor(optimal_x_fn(t_flat), dtype=torch.float32, device=device).unsqueeze(0)
+    true_u = torch.tensor(optimal_u, dtype=torch.float32, device=device).unsqueeze(0)
+    true_x = torch.tensor(optimal_x, dtype=torch.float32, device=device).unsqueeze(0)
     
     rel_err_u = relative_error(u, true_u)
     rel_err_x = relative_error(x, true_x)

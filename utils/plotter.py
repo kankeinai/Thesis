@@ -146,24 +146,25 @@ def plot_analytics(losses, epoch, last_timestamp, folder):
     plot_physics_initial(losses['physics_loss'], losses['initial_loss'], folder, epoch, last_timestamp)
 
 
-def plot_optimal_vs_predicted(t, u_pred, x_pred, u_true, x_true, title=None, savepath=None):
+def plot_optimal_vs_predicted(t, u_pred, x_pred_solution, x_pred, u_true, x_true, x_2, title=None, savepath=None):
     """
     Plots predicted vs true optimal control and state trajectories (using provided true vectors).
     """
-    t_np = t.detach().cpu().squeeze().numpy()
-    u_pred_np = u_pred.detach().cpu().squeeze().numpy()
     x_pred_np = x_pred.detach().cpu().squeeze().numpy()
 
     fig, axs = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
     
-    axs[0].plot(t_np, u_true, label='Optimal $u^*(t)$', color='black', linewidth=2)
-    axs[0].plot(t_np, u_pred_np, '--', label='Predicted $u(t)$', color='tab:blue')
+    axs[0].plot(t, u_true, label='Optimal $u^*(t)$', color='black', linewidth=2)
+    axs[0].plot(t, u_pred, '--', label='Predicted $u(t)$', color='tab:blue')
     axs[0].set_ylabel('Control $u(t)$')
     axs[0].legend()
     axs[0].grid(True)
     
-    axs[1].plot(t_np, x_true, label='Optimal $x^*(t)$', color='black', linewidth=2)
-    axs[1].plot(t_np, x_pred_np, '--', label='Predicted $x(t)$', color='tab:orange')
+    axs[1].plot(t, x_true, label='Optimal $x^*(t)$', color='black', linewidth=2)
+    axs[1].plot(t, x_pred_np, '--', label='Predicted $x(t)$', color='tab:orange')
+    axs[1].plot(t, x_pred_solution, '--', label='Solver of found u is $x(t)$', color='tab:blue')
+    axs[1].plot(t, x_2, '--', label='Solver of optimal solution', color='tab:red')
+    
     axs[1].set_xlabel('Time $t$')
     axs[1].set_ylabel('State $x(t)$')
     axs[1].legend()

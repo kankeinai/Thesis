@@ -8,8 +8,11 @@ from utils.settings import objective_functions, compute_loss_uniform_grid, optim
 from utils.plotter import plot_optimal_vs_predicted
 from utils.metrics import calculate_true_error
 import os
+import numpy as np
+from scipy.interpolate import interp1d
+from utils.data import ode_registry
 
-def load_data(architecture, train_path, test_path, seed, batch_size=128):
+def load_data(architecture, train_path, test_path, seed, batch_size=64):
     
     train_ds = DiskBackedODEDataset(train_path, architecture=architecture)
     test_ds = DiskBackedODEDataset(test_path, architecture=architecture)
@@ -33,6 +36,10 @@ def load_data(architecture, train_path, test_path, seed, batch_size=128):
 
     return train_loader, test_loader
 
+def smoothness_penalty(u):
+    # u: (batch, N)
+    return torch.mean((u[:, 1:] - u[:, :-1])**2)
+
 def solve_optimization(
         model, problem, lr=0.001, architecture="deeponet",
         w=[100, 1], bounds=None, num_epochs=1000, m=200, device=None, 
@@ -42,22 +49,32 @@ def solve_optimization(
     model.to(device)
     model.eval()
 
+    t_np = np.linspace(0, 1, m)
+
     if architecture == "deeponet":
+        t = torch.tensor(t_np, dtype=torch.float32, device=device).unsqueeze(1).requires_grad_(True)
         gradient = gradient_automatic
     else:
+        t = torch.tensor(t_np, dtype=torch.float32, device=device).unsqueeze(0).requires_grad_(True)
         gradient = gradient_finite_difference
 
-    t_np = np.linspace(0, 1, m)
-    t = torch.tensor(t_np, dtype=torch.float32, device=device).unsqueeze(0)  # [1, m]
-
-    u = torch.zeros((1, m), dtype=torch.float32, device=device, requires_grad=True)
+    u = torch.ones((1, m), dtype=torch.float32, device=device, requires_grad=True)*1.5
     u_param = torch.nn.Parameter(u)
     optimizer = optim.Adam([u_param], lr=lr)
 
+    problem_instance = ode_registry.get(problem)
+
     objective_func = objective_functions[problem]
-    physics_loss = compute_loss_uniform_grid[problem]['physics']
-    optimal_x_fn = optimal_solutions[problem]['x']
-    optimal_u_fn = optimal_solutions[problem]['u']
+    physics_loss = compute_loss_uniform_grid[problem]['physics_loss']
+    initial_loss = compute_loss_uniform_grid[problem]['initial_loss']
+    boundary_loss = compute_loss_uniform_grid[problem]['boundary_loss']
+
+
+    optimal_x_fn = optimal_solutions[problem]['x']({'t': t_np})
+    optimal_u_fn = optimal_solutions[problem]['u']({'t': t_np})
+    optimal_objective_value = objective_func({'u': torch.tensor(optimal_u_fn).to(device), 'x': torch.tensor(optimal_x_fn).to(device), 't': t})
+
+    x_pred_2 = compute_predicted_trajectory(problem_instance, optimal_u_fn, t_np.reshape(200))
 
     for epoch in range(num_epochs):
         optimizer.zero_grad()
@@ -66,16 +83,15 @@ def solve_optimization(
             u_min, u_max = bounds
             u_clamped = u_param.clamp(u_min, u_max)
 
-        if architecture == "deeponet":
-            t_input = t.transpose(1, 0) if t.shape[0] == 1 else t   # DeepONet trunk shape
-            x = model(u_clamped, t_input)
-        else:
-            x = model(u_clamped, t)
+    
+        x = model(u_clamped, t)
         dx_dt = gradient(x, t)
+
 
         loss = (
             w[0] * physics_loss({'x': x, 'dx_dt': dx_dt, 'u': u_clamped, 't': t})
-            + w[1] * objective_func({'x': x, 'u': u_clamped, 't': t})
+            + w[1] * objective_func({'x': x.squeeze(), 'u': u_clamped.squeeze(), 't': t.squeeze()}) + w[2] * initial_loss({'x': x.view(200)[0]})+
+            w[3]* smoothness_penalty(u_clamped) + w[4]*boundary_loss({'x':x[-1]})
         )
         loss.backward()
         optimizer.step()
@@ -87,10 +103,20 @@ def solve_optimization(
         # --- PLOT INSIDE LOOP ---
         # Plot every 'plot_interval' epochs and at the final epoch
         if ((epoch + 1) % plot_interval == 0) or (epoch + 1 == num_epochs):
+
+            optimal_objective_value_predicted = objective_func({'u': u_param.squeeze(), 'x': x.squeeze(), 't': t.squeeze()})
+            title = f"predicted value: {optimal_objective_value_predicted}, correct value: {optimal_objective_value}"
+
+            u_pred = u_param.detach().cpu().numpy().reshape(200)
+
+            # Step 3: Compute x_pred
+            x_pred = compute_predicted_trajectory(problem_instance, u_pred, t_np.reshape(200))
+
+
             print(f"Plotting at epoch {epoch+1}")
             plot_optimal_vs_predicted(
-                t, u_param.detach(), x.detach(), optimal_u_fn, optimal_x_fn,
-                title=f'Optimal vs Predicted (Epoch {epoch+1})'
+                t_np.reshape(200), u_pred, x_pred, x.detach(), optimal_u_fn, optimal_x_fn, x_pred_2,
+                title=title, savepath=f"found_trajectories/{problem}/{architecture}/plot.png"
             )
 
         # Calculate relative error for monitoring
@@ -114,3 +140,24 @@ def save_model(model, optimizer, epoch, timestamp, mean_error, checkpoint_path, 
 def check_that_folder_exists(folders):
     for f in folders:
         os.makedirs(f, exist_ok=True)
+
+def compute_predicted_trajectory(problem, u_pred: np.ndarray, t_grid: np.ndarray):
+    """
+    Compute x(t) by solving the ODE with a predicted control u_pred(t),
+    defined on a uniform time grid t_grid.
+
+    Args:
+        problem: An instance of ODEProblem (e.g. from registry)
+        u_pred: 1D numpy array, predicted control values (shape: [m])
+        t_grid: 1D numpy array, time discretization grid (shape: [m])
+
+    Returns:
+        x_pred: 1D numpy array, predicted state trajectory (shape: [m])
+    """
+    # Step 1: Interpolate the predicted control function
+    control_func = interp1d(t_grid, u_pred, kind='cubic', fill_value="extrapolate")
+
+    # Step 2: Use ODEProblem to solve the resulting trajectory
+    x_pred = problem.solve_trajectory(control_func=control_func, t_eval=t_grid)
+
+    return x_pred
