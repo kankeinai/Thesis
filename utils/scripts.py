@@ -12,7 +12,7 @@ import numpy as np
 from scipy.interpolate import interp1d
 from utils.data import ode_registry
 
-def load_data(architecture, train_path, test_path, seed, batch_size=64):
+def load_data(architecture, train_path, test_path, seed=42, batch_size=64):
     
     train_ds = DiskBackedODEDataset(train_path, architecture=architecture)
     test_ds = DiskBackedODEDataset(test_path, architecture=architecture)
@@ -41,9 +41,10 @@ def smoothness_penalty(u):
     return torch.mean((u[:, 1:] - u[:, :-1])**2)
 
 def solve_optimization(
-        model, problem, lr=0.001, architecture="deeponet",
+        model, problem, initial_guess, lr=0.001, architecture="deeponet",
         w=[100, 1], bounds=None, num_epochs=1000, m=200, device=None, 
-        plot_interval=200):
+        plot_interval=200, logging=False):
+    
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -58,8 +59,7 @@ def solve_optimization(
         t = torch.tensor(t_np, dtype=torch.float32, device=device).unsqueeze(0).requires_grad_(True)
         gradient = gradient_finite_difference
 
-    u = torch.ones((1, m), dtype=torch.float32, device=device, requires_grad=True)*1.5
-    u_param = torch.nn.Parameter(u)
+    u_param = torch.nn.Parameter(initial_guess)
     optimizer = optim.Adam([u_param], lr=lr)
 
     problem_instance = ode_registry.get(problem)
@@ -72,11 +72,16 @@ def solve_optimization(
 
     optimal_x_fn = optimal_solutions[problem]['x']({'t': t_np})
     optimal_u_fn = optimal_solutions[problem]['u']({'t': t_np})
-    optimal_objective_value = objective_func({'u': torch.tensor(optimal_u_fn).to(device), 'x': torch.tensor(optimal_x_fn).to(device), 't': t})
-
     x_pred_2 = compute_predicted_trajectory(problem_instance, optimal_u_fn, t_np.reshape(200))
 
-    for epoch in range(num_epochs):
+    analytics = {
+        'obj' : [],
+        'total_loss': [],
+        'rel_err_u' : [],
+        'rel_err_x' : []
+    }
+
+    for epoch in range(1, num_epochs+1):
         optimizer.zero_grad()
         u_clamped = u_param
         if bounds:
@@ -87,12 +92,18 @@ def solve_optimization(
         x = model(u_clamped, t)
         dx_dt = gradient(x, t)
 
+        obj = objective_func({'x': x.squeeze(), 'u': u_clamped.squeeze(), 't': t.squeeze()})
+
 
         loss = (
             w[0] * physics_loss({'x': x, 'dx_dt': dx_dt, 'u': u_clamped, 't': t})
-            + w[1] * objective_func({'x': x.squeeze(), 'u': u_clamped.squeeze(), 't': t.squeeze()}) + w[2] * initial_loss({'x': x.view(200)[0]})+
+            + w[1] * obj + w[2] * initial_loss({'x': x.view(200)[0]})+
             w[3]* smoothness_penalty(u_clamped) + w[4]*boundary_loss({'x':x[-1]})
         )
+
+        analytics['obj'].append(obj.item())
+        analytics['total_loss'].append(loss.item())
+
         loss.backward()
         optimizer.step()
 
@@ -102,18 +113,15 @@ def solve_optimization(
 
         # --- PLOT INSIDE LOOP ---
         # Plot every 'plot_interval' epochs and at the final epoch
-        if ((epoch + 1) % plot_interval == 0) or (epoch + 1 == num_epochs):
+        if (epoch  % plot_interval == 0) or epoch==num_epochs:
 
-            optimal_objective_value_predicted = objective_func({'u': u_param.squeeze(), 'x': x.squeeze(), 't': t.squeeze()})
-            title = f"predicted value: {optimal_objective_value_predicted}, correct value: {optimal_objective_value}"
+            title = f"Optimal vs predicted (epoch {epoch})"
 
             u_pred = u_param.detach().cpu().numpy().reshape(200)
 
             # Step 3: Compute x_pred
             x_pred = compute_predicted_trajectory(problem_instance, u_pred, t_np.reshape(200))
 
-
-            print(f"Plotting at epoch {epoch+1}")
             plot_optimal_vs_predicted(
                 t_np.reshape(200), u_pred, x_pred, x.detach(), optimal_u_fn, optimal_x_fn, x_pred_2,
                 title=title, savepath=f"found_trajectories/{problem}/{architecture}/plot.png"
@@ -123,7 +131,17 @@ def solve_optimization(
         rel_err_u, rel_err_x = calculate_true_error(
             x.detach(), u_param.detach(), t, optimal_x_fn, optimal_u_fn, device
         )
-        print(f"Epoch {epoch+1:4d} | Loss: {loss.item():.6f} | rel_err_u: {rel_err_u:.4f}, rel_err_x: {rel_err_x:.4f}")
+
+        analytics['rel_err_u'].append(rel_err_u)
+        analytics['rel_err_x'].append(rel_err_x)
+
+        if epoch % 50 == 0:
+            print(f"Epoch {epoch:4d} | Loss: {loss.item():.6f} | rel_err_u: {rel_err_u:.4f}, rel_err_x: {rel_err_x:.4f}")
+
+    if logging:
+        return analytics, x.detach().cpu().numpy(), u_param.detach().cpu().numpy(), optimal_x_fn, optimal_u_fn
+    else:
+        return
 
 def save_model(model, optimizer, epoch, timestamp, mean_error, checkpoint_path, model_filename = None):
     # save model every 10th

@@ -177,4 +177,4 @@ def plot_optimal_vs_predicted(t, u_pred, x_pred_solution, x_pred, u_true, x_true
     if savepath:
         plt.savefig(savepath, dpi=200)
         print(f"Plot saved to {savepath}")
-    plt.show()
+    plt.close()
