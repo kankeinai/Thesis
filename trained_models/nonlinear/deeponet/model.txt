@@ -1,0 +1,26 @@
+# Model Parameters
+m = 200         # sensor size (branch input size)
+n_hid = 200     # layer's hidden sizes
+p = 200         # output size
+dim_x = 1       # trunk (trunk input size)
+
+# Specify the MLP architecture
+branch_net = [m, n_hid,  n_hid, n_hid, n_hid, p]
+branch_activations = ['tanh', 'tanh', 'tanh', 'tanh','none']
+trunk_net = [dim_x, n_hid,  n_hid, n_hid, n_hid, p]
+trunk_activations = ['tanh', 'tanh', 'tanh', 'tanh','none']
+model = DeepONetCartesianProd(branch_net, trunk_net, branch_activations, trunk_activations)
+model.to(device)
+
+#Initialize Optimizer
+lr = 0.0001
+print(f"Using learning rate: {lr}")
+epochs = 2000
+
+optimizer = optim.Adam(model.parameters(), lr=lr)
+
+scheduler = StepLR(
+    optimizer,
+    step_size=100,   # decay LR every 50 epochs (set as you like)
+    gamma=0.9,      # halve the LR
+)

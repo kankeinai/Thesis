@@ -1,0 +1,22 @@
+modes = 32
+width = 16
+hidden_layer = 128
+
+model = LNO1d(width, modes, activation = "silu",batch_norm=True, active_last=True, hidden_layer=hidden_layer).to(device)
+
+# ====================================
+# Training settings
+# ====================================
+#Initialize Optimizer
+lr = 0.001
+print(f"Using learning rate: {lr}")
+epochs = 1000
+
+optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+scheduler = StepLR(
+    optimizer,
+    step_size=100,   # decay LR every 50 epochs (set as you like)
+    gamma=0.5,      # halve the LR
+)

@@ -1,0 +1,6 @@
+modes = [8, 8]
+width = 4
+hidden_layer = 64
+
+# Instantiate and load the model as needed
+model = LNO1d_extended(modes=modes, width=width, activation="silu", depth=2, active_last=True, hidden_layer=hidden_layer).to(device)

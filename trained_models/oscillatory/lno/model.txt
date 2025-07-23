@@ -1,0 +1,21 @@
+modes = 8
+width = 4
+hidden_layer = 64
+
+model = LNO1d(width, modes, hidden_layer=hidden_layer).to(device)
+
+# ====================================
+# Training settings
+# ====================================
+#Initialize Optimizer
+lr = 0.001
+print(f"Using learning rate: {lr}")
+epochs = 1000
+
+optimizer = optim.Adam(model.parameters(), lr=lr)
+
+scheduler = StepLR(
+    optimizer,
+    step_size=50,   # decay LR every 50 epochs (set as you like)
+    gamma=0.9,      # halve the LR
+)
