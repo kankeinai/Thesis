@@ -132,3 +132,131 @@ def gradient_finite_difference(x, t):
     dx_dt,  = torch.gradient(x, spacing=(t[0, :],), dim=1)
     return dx_dt.squeeze(-1)
 
+trained_models ={
+    'linear': {
+        'deeponet': 'trained_models/linear/deeponet/unsupervised/epoch[1800]_model_time_[20250717_215634]_loss_[0.0006].pth',
+        'fno': 'trained_models/linear/fno/unsupervised/epoch[180]_model_time_[20250718_201619]_loss_[0.0027].pth',
+        'lno': 'trained_models/linear/lno/unsupervised/epoch[670]_model_time_[20250718_232320]_loss_[0.0011].pth',
+    },
+    'nonlinear': {
+        'deeponet': 'trained_models/nonlinear/deeponet/unsupervised/epoch[1500]_model_time_[20250717_215941]_loss_[0.0099].pth',
+        'fno': 'trained_models/nonlinear/fno/unsupervised/epoch[620]_model_time_[20250718_211507]_loss_[0.0010].pth',
+        'lno': 'trained_models/nonlinear/lno/unsupervised/epoch[360]_model_time_[20250719_151537]_loss_[0.0597].pth',
+    },
+    'oscillatory': {
+        'deeponet': 'trained_models/oscillatory/deeponet/unsupervised/epoch[1500]_model_time_[20250717_222232]_loss_[0.0065].pth',
+        'fno': 'trained_models/oscillatory/fno/unsupervised/epoch[770]_model_time_[20250718_205034]_loss_[0.0028].pth',
+        'lno': 'trained_models/oscillatory/lno/unsupervised/epoch[1000]_model_time_[20250718_232530]_loss_[0.0017].pth'
+    },
+    'polynomial_tracking': {
+        'deeponet': 'trained_models/polynomial_tracking/deeponet/unsupervised/epoch[1300]_model_time_[20250717_222408]_loss_[0.0149].pth',
+        'fno': 'trained_models/polynomial_tracking/fno/unsupervised/epoch[780]_model_time_[20250718_210320]_loss_[0.0050].pth',
+        'lno': 'trained_models/polynomial_tracking/lno/unsupervised/epoch[1000]_model_time_[20250718_233449]_loss_[0.0127].pth',
+    },
+    'singular_arc': {
+        'deeponet': 'trained_models/singular_arc/deeponet/unsupervised/epoch[1500]_model_time_[20250717_220059]_loss_[0.0059].pth',
+        'fno': 'trained_models/singular_arc/fno/unsupervised/epoch[230]_model_time_[20250718_215927]_loss_[0.0091].pth',
+        'lno': 'trained_models/singular_arc/lno/attempt_started20250720_215514/epoch[1000]_model_time_[20250720_215514]_loss_[0.0148].pth',
+    }
+}
+
+architecture_settings = {
+    'fno': {
+        'linear': {
+            'modes': 16,
+            'width': 32,
+            'depth': 4,
+            'hidden_layer': 128,
+            'activation': 'silu',
+        },
+        'nonlinear': {
+            'modes': 16,
+            'width': 64,
+            'depth': 5,
+            'hidden_layer': 128,
+            'activation': 'silu',
+        },
+        'oscillatory': {
+            'modes': 16,
+            'width': 32,
+            'depth': 4,
+            'hidden_layer': 64,
+            'activation': 'silu',
+        },
+        'polynomial_tracking': {
+            'modes': 16,
+            'width': 32,
+            'depth': 4,
+            'hidden_layer': 64,
+            'activation': 'silu',
+        },
+        'singular_arc': {
+            'modes': 32,
+            'width': 64,
+            'depth': 6,
+            'hidden_layer': 256,
+            'activation': 'silu',
+        },
+    },
+    'deeponet': {
+        'branch_net' : [200, 200, 200, 200, 200, 200],
+        'branch_activations' : ['tanh', 'tanh', 'tanh', 'tanh','none'],
+        'trunk_net' : [1, 200, 200, 200, 200, 200],
+        'trunk_activations' : ['tanh', 'tanh', 'tanh', 'tanh','none']
+    },
+    'lno': {
+        'linear': {
+            'extended' : False,
+            'modes' : 8,
+            'width' : 4,
+            'hidden_layer' : 64,
+            'activation' : 'silu',
+            'batch_norm' : False,
+            'active_last' : False,
+        },
+        'nonlinear': {
+            'extended' : True,
+            'modes' : [8, 8],
+            'width' : 4,
+            'hidden_layer' : 64,
+            'depth' : 2,
+            'activation' : 'tanh',
+            'active_last' : True,
+        },
+        'oscillatory': {
+            'extended' : False,
+            'modes' : 8,
+            'width' : 4,
+            'hidden_layer' : 64,
+            'activation' : 'silu',
+            'batch_norm' : False,
+            'active_last' : False,
+        },
+        'polynomial_tracking': {
+            'extended' : False,
+            'modes' : 8,
+            'width' : 4,
+            'hidden_layer' : 64,
+            'activation' : 'silu',
+            'batch_norm' : False,
+            'active_last' : False,
+        },
+        'singular_arc': {
+            'extended' : False,
+            'modes' : 32,
+            'width' : 16,
+            'hidden_layer' : 128,
+            'activation' : 'silu',
+            'batch_norm' : True,
+            'active_last' : True,
+        }
+    }
+}
+
+boundaries = {
+    'linear': None,
+    'oscillatory': None,
+    'polynomial_tracking': None,
+    'nonlinear': [-1.5, 1.5],
+    'singular_arc': [-3.5, 0],
+}

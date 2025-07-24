@@ -7,9 +7,4 @@ __pycache__/
 *.bak
 *.swp
 *.DS_Store
-analytics_plots/
-plots/
-trained_models/
-computation_time/
-found_trajectories/
 .gitignore

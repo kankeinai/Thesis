@@ -11,6 +11,10 @@ import os
 import numpy as np
 from scipy.interpolate import interp1d
 from utils.data import ode_registry
+from models.deeponet import DeepONetCartesianProd
+from models.fno import FNO1d
+from models.lno import LNO1d, LNO1d_extended
+from utils.settings import trained_models, architecture_settings
 
 def load_data(architecture, train_path, test_path, seed=42, batch_size=64):
     
@@ -43,7 +47,7 @@ def smoothness_penalty(u):
 def solve_optimization(
         model, problem, initial_guess, lr=0.001, architecture="deeponet",
         w=[100, 1], bounds=None, num_epochs=1000, m=200, device=None, 
-        plot_interval=200, logging=False):
+        plot_interval=200, result = False, early_stopping=False, patience=200, min_delta=1e-5, plots=True, log = 100):
     
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -81,6 +85,9 @@ def solve_optimization(
         'rel_err_x' : []
     }
 
+    best_loss = float("inf")
+    wait = 0
+
     for epoch in range(1, num_epochs+1):
         optimizer.zero_grad()
         u_clamped = u_param
@@ -107,25 +114,36 @@ def solve_optimization(
         loss.backward()
         optimizer.step()
 
+        if early_stopping:
+            if loss.item() < best_loss - min_delta:
+                best_loss = loss.item()
+                wait = 0
+            else:
+                wait += 1
+            if wait >= patience:
+                print(f"[Early stop] Epoch {epoch} | Best loss: {best_loss:.4e}")
+                break
+
         if bounds:
             with torch.no_grad():
                 u_param.data.clamp_(u_min, u_max)
 
         # --- PLOT INSIDE LOOP ---
         # Plot every 'plot_interval' epochs and at the final epoch
-        if (epoch  % plot_interval == 0) or epoch==num_epochs:
+        if plots:
+            if (epoch  % plot_interval == 0) or epoch==num_epochs:
 
-            title = f"Optimal vs predicted (epoch {epoch})"
+                title = f"Optimal vs predicted (epoch {epoch})"
 
-            u_pred = u_param.detach().cpu().numpy().reshape(200)
+                u_pred = u_param.detach().cpu().numpy().reshape(200)
 
-            # Step 3: Compute x_pred
-            x_pred = compute_predicted_trajectory(problem_instance, u_pred, t_np.reshape(200))
+                # Step 3: Compute x_pred
+                x_pred = compute_predicted_trajectory(problem_instance, u_pred, t_np.reshape(200))
 
-            plot_optimal_vs_predicted(
-                t_np.reshape(200), u_pred, x_pred, x.detach(), optimal_u_fn, optimal_x_fn, x_pred_2,
-                title=title, savepath=f"found_trajectories/{problem}/{architecture}/plot.png"
-            )
+                plot_optimal_vs_predicted(
+                    t_np.reshape(200), u_pred, x_pred, x.detach(), optimal_u_fn, optimal_x_fn, x_pred_2,
+                    title=title, savepath=f"found_trajectories/{problem}/{architecture}/plot.png"
+                )
 
         # Calculate relative error for monitoring
         rel_err_u, rel_err_x = calculate_true_error(
@@ -135,10 +153,10 @@ def solve_optimization(
         analytics['rel_err_u'].append(rel_err_u)
         analytics['rel_err_x'].append(rel_err_x)
 
-        if epoch % 50 == 0:
+        if epoch % log == 0:
             print(f"Epoch {epoch:4d} | Loss: {loss.item():.6f} | rel_err_u: {rel_err_u:.4f}, rel_err_x: {rel_err_x:.4f}")
 
-    if logging:
+    if result:
         return analytics, x.detach().cpu().numpy(), u_param.detach().cpu().numpy(), optimal_x_fn, optimal_u_fn
     else:
         return
@@ -179,3 +197,75 @@ def compute_predicted_trajectory(problem, u_pred: np.ndarray, t_grid: np.ndarray
     x_pred = problem.solve_trajectory(control_func=control_func, t_eval=t_grid)
 
     return x_pred
+
+def load_pretrained_model(problem, architecture, device=None):
+    
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if architecture == "deeponet":
+        branch_net = architecture_settings[architecture]['branch_net']
+        trunk_net = architecture_settings[architecture]['trunk_net']
+        branch_activations = architecture_settings[architecture]['branch_activations']
+        trunk_activations = architecture_settings[architecture]['trunk_activations']
+
+        model = DeepONetCartesianProd(branch_net, trunk_net, branch_activations, trunk_activations).to(device=device)
+    elif architecture == "fno":
+        model = FNO1d(modes=architecture_settings[architecture][problem]['modes'], 
+                      width=architecture_settings[architecture][problem]['width'], 
+                      depth=architecture_settings[architecture][problem]['depth'], 
+                      activation=architecture_settings[architecture][problem]['activation'], 
+                      hidden_layer=architecture_settings[architecture][problem]['hidden_layer']).to(device=device)
+
+    elif architecture == "lno":
+        if architecture_settings[architecture][problem]['extended']:
+            model = LNO1d_extended(modes=architecture_settings[architecture][problem]['modes'], 
+                                  width=architecture_settings[architecture][problem]['width'], 
+                                  activation=architecture_settings[architecture][problem]['activation'], 
+                                  hidden_layer=architecture_settings[architecture][problem]['hidden_layer'],
+                                  depth=architecture_settings[architecture][problem]['depth'],
+                                  active_last=architecture_settings[architecture][problem]['active_last']).to(device=device)
+        else:
+            model = LNO1d(modes=architecture_settings[architecture][problem]['modes'], 
+                        width=architecture_settings[architecture][problem]['width'], 
+                        activation=architecture_settings[architecture][problem]['activation'], 
+                        hidden_layer=architecture_settings[architecture][problem]['hidden_layer'],
+                        batch_norm=architecture_settings[architecture][problem]['batch_norm'],
+                        active_last=architecture_settings[architecture][problem]['active_last']).to(device=device)
+
+    ckpt = torch.load(trained_models[problem][architecture], map_location=device)
+    model.load_state_dict(ckpt["model_state_dict"])
+
+    return model
+
+
+def generate_weights(rho: float, problem: str, architecture: str):
+    if architecture == 'deeponet':
+        weights = {
+            'linear': [100, rho, 1, 1, 0],
+            'oscillatory': [10, rho, 1, 0, 10],
+            'polynomial_tracking': [200, rho, 1, 2, 0],
+            'nonlinear': [150, rho, 1, 1, 0],
+            'singular_arc': [10, rho, 1, 1, 10]
+        }
+    elif architecture == 'fno':
+        weights = {
+            'linear': [10, rho, 1, 0, 0],
+            'oscillatory': [10, rho, 1, 0, 0.1],
+            'polynomial_tracking': [100, rho, 1, 1, 0],
+            'nonlinear': [5, 1, rho, 0.1, 0],
+            'singular_arc':[10, rho, 1, 0, 10]
+        }
+    elif architecture == 'lno':
+        weights = {
+            'linear':  [10, rho, 1, 0, 0],
+            'oscillatory': [10, rho, 1, 0, 0.1],
+            'polynomial_tracking': [100, rho, 1, 1, 0],
+            'nonlinear': [100, rho, 1, 1, 0],
+            'singular_arc': [50, rho, 1, 0, 10]
+        }
+    else:
+        raise ValueError(f"Architecture {architecture} not supported")
+
+    return weights[problem]
+
