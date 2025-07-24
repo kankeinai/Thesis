@@ -5,7 +5,7 @@ This repository is part of a thesis project exploring how different neural opera
 ## Project Structure
 
 ```
-Thesis-2/
+Thesis/
 ├── models/              # Model architectures: DeepONet, FNO, LNO
 ├── trained_models/      # Saved weights and checkpoints of trained models
 ├── utils/               # Utilities for data, training, plotting, metrics, settings, etc.
@@ -46,7 +46,7 @@ You can also generate datasets using the script:
    ```bash
    pip install -r requirements.txt
    ```
-   
+
 ## Usage
 
 ### Training a Model
