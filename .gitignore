@@ -8,3 +8,4 @@ __pycache__/
 *.swp
 *.DS_Store
 .gitignore
+/computation_time/

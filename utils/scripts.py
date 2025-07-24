@@ -47,7 +47,7 @@ def smoothness_penalty(u):
 def solve_optimization(
         model, problem, initial_guess, lr=0.001, architecture="deeponet",
         w=[100, 1], bounds=None, num_epochs=1000, m=200, device=None, 
-        plot_interval=200, result = False, early_stopping=False, patience=200, min_delta=1e-5, plots=True, log = 100):
+        plot_interval=200, result = False, early_stopping=False, patience=200, min_delta=1e-6, plots=True, log = 100):
     
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

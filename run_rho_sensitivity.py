@@ -25,7 +25,7 @@ from utils.settings import boundaries
 
 # ----------------------- Constants ------------------------ #
 
-BENCHMARKS     = ["linear", "oscillatory", "polynomial", "nonlinear", "singular"]
+BENCHMARKS     = ["linear", "oscillatory", "polynomial_tracking", "nonlinear", "singular_arc"]
 ARCHITECTURES  = ["deeponet", "fno", "lno"]
 RHOS           = [0.1, 1.0, 10.0]
 SEEDS          = [42, 43, 44]
@@ -67,29 +67,28 @@ for bench, arch, rho, seed in itertools.product(BENCHMARKS, ARCHITECTURES, RHOS,
         m=HORIZON_STEPS,
         bounds=boundaries[bench],
         device=DEVICE,
-        logging=True,
+        result=True,
         early_stopping=True,
-        patience=300,
+        patience=1000,
         plots=False
     )
 
     toc = time.time()
 
-    # Evaluate final state error
-    xT = x_pred.squeeze()[-1]
-    xT_opt = x_opt_fn({'t': t_grid})[-1]
-    terminal_error = float(np.linalg.norm(xT - xT_opt))
+    rel_err_u = float(analytics['rel_err_u'][-1])
+    rel_err_x = float(analytics['rel_err_x'][-1])
 
     # Store summary metrics
     records.append(dict(
-        benchmark=bench,
-        arch=arch,
-        rho=rho,
-        seed=seed,
-        err=terminal_error,
-        obj=analytics['obj'][-1],
-        stop_epoch=analytics['stopped_epoch'],
-        solve_s=toc - tic
+        benchmark = bench,
+        arch = arch,
+        rho = rho,
+        seed = seed,
+        rel_err_u = rel_err_u,
+        rel_err_x = rel_err_x,
+        obj = analytics['obj'][-1],
+        stop_epoch = len(analytics['obj']),
+        solve_s = toc - tic
     ))
 
 # ----------------------- Save Results --------------------- #
@@ -101,14 +100,17 @@ raw_df.to_csv("results/rho_sensitivity.csv", index=False)
 summary_df = (
     raw_df.groupby(["benchmark", "arch", "rho"], as_index=False)
     .agg(
-        err_mean=("err", "mean"),
-        err_std=("err", "std"),
+        rel_err_x_mean=("rel_err_x", "mean"),
+        rel_err_x_std=("rel_err_x", "std"),
+        rel_err_u_mean=("rel_err_u", "mean"),
+        rel_err_u_std=("rel_err_u", "std"),
         obj_mean=("obj", "mean"),
         obj_std=("obj", "std"),
         stop_epoch_mean=("stop_epoch", "mean"),
         solve_s_mean=("solve_s", "mean")
     )
 )
+
 summary_df.to_csv("results/rho_sensitivity_summary.csv", index=False)
 
 print("Saved 135 raw runs → results/rho_sensitivity.csv")
