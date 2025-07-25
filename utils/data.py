@@ -398,8 +398,6 @@ class MultiFunctionDatasetODE(Dataset):
             func_type: Type of function to generate
             should_supervise: Whether to compute trajectory for this function
         """
-        print(f"generating function {func_type}")
-        print(random.random())
         # Generate the control function and its analytical form
         if func_type == 'grf':
             grid_size = np.random.randint(self.m // 2, self.m * 2)
