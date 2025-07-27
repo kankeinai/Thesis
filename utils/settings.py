@@ -260,3 +260,62 @@ boundaries = {
     'nonlinear': [-1.5, 1.5],
     'singular_arc': [-3.5, 0],
 }
+
+
+
+def compute_residual_burgers(u, f, dx, dt, nu=0.01):
+    """
+    Compute PDE residual: ∂u/∂t + u ∂u/∂x = ν ∂²u/∂x² + f(x)
+    Soft BCs handled separately.
+    """
+    dudt = torch.gradient(u, spacing=dt, dim=2)[0]
+    dudx = torch.gradient(u, spacing=dx, dim=1)[0]
+    d2udx2 = torch.gradient(dudx, spacing=dx, dim=1)[0]
+
+    f_expanded = f.unsqueeze(-1).expand_as(u)
+    residual = dudt + u * dudx - nu * d2udx2 - f_expanded
+
+    return residual
+def dirichlet_boundary_loss(u):
+    """
+    Penalize boundary values at x=0 and x=1.
+    u: [B, Nx, Nt]
+    """
+    left  = u[:, 0, :]     # y(0, t)
+    right = u[:, -1, :]    # y(1, t)
+    return torch.mean(left**2) + torch.mean(right**2)
+
+
+def compute_residual_diffusion_reaction(u, f, dx, dt, nu=0.01, alpha=0.01):
+    """
+    Compute residual for the PDE:
+        ∂u/∂t = ν ∂²u/∂x² - α u² + f(x)
+
+    Inputs:
+        u : [B, Nx, Nt]  – predicted solution
+        f : [B, Nx]      – time-invariant forcing term (control)
+    """
+    dudt = torch.gradient(u, spacing=dt, dim=2)[0]  # [B, Nx, Nt]
+    du_dx = torch.gradient(u, spacing=dx, dim=1)[0]
+    d2udx2 = torch.gradient(du_dx, spacing=dx, dim=1)[0]  # [B, Nx, Nt]
+    reaction = -alpha * u**2  # [B, Nx, Nt]
+    f_expanded = f.unsqueeze(-1).expand_as(u)  # [B, Nx, Nt]
+    residual = dudt - nu * d2udx2 + reaction - f_expanded  # [B, Nx, Nt]
+
+    return residual
+
+def compute_residual_heat(u, f, dx, dt, nu):
+    """
+    Compute residual for:
+        ∂u/∂t = ν ∂²u/∂x² + f(x)
+
+    Inputs:
+        u: [B, Nx, Nt] – predicted solution
+        f: [B, Nx]     – forcing term
+    """
+    dudt = torch.gradient(u, spacing=dt, dim=2)[0]  # [B, Nx, Nt]
+    du_dx = torch.gradient(u, spacing=dx, dim=1)[0]
+    d2u_dx2 = torch.gradient(du_dx, spacing=dx, dim=1)[0]  # [B, Nx, Nt]
+    f_expanded = f.unsqueeze(-1).expand_as(u)  # [B, Nx, Nt]
+    residual = dudt - nu * d2u_dx2 - f_expanded  # [B, Nx, Nt]
+    return residual

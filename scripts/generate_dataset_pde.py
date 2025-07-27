@@ -1,4 +1,4 @@
-from utils.data_burgers import Burgers1D  # assuming it's in utils/data_burgers.py
+from utils.data_pde import MultiFunctionDatasetPDE  # assuming it's in heat_dataset.py
 import numpy as np
 import random
 import torch
@@ -18,16 +18,15 @@ torch.backends.cudnn.benchmark = False
 # ---------------------------------------------------------------------
 # 1) Create the dataset in memory (expensive step happens only once)
 # ---------------------------------------------------------------------
-ds_test = Burgers1D(
-    n_samples=100000,
+ds_train = MultiFunctionDatasetPDE(
+    n_samples=2000,
     Nx=64,
     Nt=100,
-    nu=0.05,    
-    smoothing= False,
-    save_path="datasets/burgers1d/",
-    fraction_supervised=0,
+    nu=0.01,   # or 'sine', 'fourier', 'step'
+    smoothing=False,
+    project=False,          # preserve amplitude variability
+    save_path="datasets/heat1d/",
+    fraction_supervised=1,  # 50% supervised
     include_supervision=True,
-    name="train",
-    solver="ivp",
-    control_functions=["grf", "sine", "fourier", "step"],
+    name = "test"
 )

@@ -1,66 +1,20 @@
-"""
-Parametric FNO training for 1-D heat equation control
-Author: you
-"""
-
-# ----------------------------------------------------------------------
-# 0.  imports
-# ----------------------------------------------------------------------
 import os, time
 from pathlib import Path
 import numpy as np
 import torch, torch.nn as nn, torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
-from utils.data_heat import load_heat1d_dataset, custom_collate_fno1d_fn
+from utils.data_pde import load_pde1d_dataset, custom_collate_fno1d_fn
+from utils.settings import compute_residual_diffusion_reaction
 from models.fno import FNO1d
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# ----------------------------------------------------------------------
-# 1.  physics residual
-# ----------------------------------------------------------------------
-def compute_residual_diffusion_reaction(u, f, dx, dt, nu=0.01, alpha=0.01):
-    """
-    Compute residual for the PDE:
-        ∂u/∂t = ν ∂²u/∂x² - α u² + f(x)
 
-    Inputs:
-        u : [B, Nx, Nt]  – predicted solution
-        f : [B, Nx]      – time-invariant forcing term (control)
-    """
-    # Time derivative: ∂u/∂t
-    dudt = torch.gradient(u, spacing=dt, dim=2)[0]  # [B, Nx, Nt]
-
-    # Second spatial derivative: ∂²u/∂x²
-    du_dx = torch.gradient(u, spacing=dx, dim=1)[0]
-    d2udx2 = torch.gradient(du_dx, spacing=dx, dim=1)[0]  # [B, Nx, Nt]
-
-    # Reaction term: -α u²
-    reaction = -alpha * u**2  # [B, Nx, Nt]
-
-    # Expand f across time
-    f_expanded = f.unsqueeze(-1).expand_as(u)  # [B, Nx, Nt]
-
-    # Residual
-    residual = dudt - nu * d2udx2 + reaction - f_expanded  # [B, Nx, Nt]
-
-    # Optionally crop to interior if needed:
-    # residual = residual[:, 1:-1, :]  # match older slicing
-
-    return residual
-
-# ----------------------------------------------------------------------
-# 2.  logger
-# ----------------------------------------------------------------------
 def _log(d, **kwargs):
     for k, v in kwargs.items():
         d.setdefault(k, []).append(v)
 
-# ----------------------------------------------------------------------
-# 3.  build model
-# ----------------------------------------------------------------------
 def build_model():
     return FNO1d(
         modes=32,
@@ -71,9 +25,6 @@ def build_model():
         activation="gelu",
         ).to(device)
 
-# ----------------------------------------------------------------------
-# 4.  main
-# ----------------------------------------------------------------------
 def main():
     epochs       = 10000
     batch_size   = 128
@@ -91,8 +42,8 @@ def main():
     stats_file   = root_dir / "training_stats.pt"
     print(f"[heat1d] Training directory: {root_dir}")
 
-    train_ds = load_heat1d_dataset("datasets/diffusion1d/diffusion_1d_dataset_train_2025-07-26.h5")
-    test_ds = load_heat1d_dataset("datasets/diffusion1d/diffusion_1d_dataset_test_2025-07-26.h5")
+    train_ds = load_pde1d_dataset("datasets/diffusion1d/diffusion_1d_dataset_train_2025-07-26.h5")
+    test_ds = load_pde1d_dataset("datasets/diffusion1d/diffusion_1d_dataset_test_2025-07-26.h5")
     train_loader = DataLoader(train_ds, batch_size, shuffle=True, collate_fn=custom_collate_fno1d_fn)
     test_loader  = DataLoader(test_ds, batch_size, shuffle=False, collate_fn=custom_collate_fno1d_fn)
 
@@ -141,7 +92,7 @@ def main():
              train_phys=tr_phy_mu, train_phys_sd=tr_phy_sd,
              train_data=tr_dat_mu, train_data_sd=tr_dat_sd)
         print(f"Epoch {ep:03d} ↳ train: total={tr_tot_mu:.3e}±{tr_tot_sd:.1e}, phys={tr_phy_mu:.3e}±{tr_phy_sd:.1e}, data={tr_dat_mu:.3e}±{tr_dat_sd:.1e} (t={time.perf_counter() - t0:.2f}s)")
-        # ----- validation -----------------------------------------
+       
         model.eval()
         te_mse_b, te_phy_b = [], []
         with torch.no_grad():

@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from utils.data import MultiFunctionDatasetODE, DiskBackedODEDataset, save_dataset
+from utils.data_ode import MultiFunctionDatasetODE, DiskBackedODEDataset, save_dataset
 from torch.utils.data import DataLoader
 from scipy.signal import savgol_filter
 from scipy.interpolate import CubicSpline

@@ -7,20 +7,14 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.integrate import solve_ivp
 import h5py
 
-class HeatEquation1DControlDataset(Dataset):
-    """
-    Dataset for solving 1D heat equation with time-invariant control:
-        u(x) -> y(x, t)
-
-    If 'include_supervision' is True, solves the PDE and stores trajectories.
-    Otherwise, returns empty targets for physics-informed training.
-    """
+class MultiFunctionDatasetPDE(Dataset):
     def __init__(
         self,
         n_samples: int,
         Nx: int,
         Nt: int,
-        nu: float = 0.01,
+        problem: str = "heat",
+        properties: dict = {"nu": 0.01},
         control_functions =  ["grf",'sine', 'fourier'],
         domain_x=(0.0, 1.0),
         domain_t=(0.0, 1.0),
@@ -31,10 +25,31 @@ class HeatEquation1DControlDataset(Dataset):
         save_path: str = None,
         name = "train"
     ):
+        if problem == "heat":
+            try:
+                self.nu = properties["nu"]
+            except KeyError:
+                raise ValueError("nu is required for heat equation")
+        elif problem == "diffusion":
+            try:
+                self.diff_coef = properties["diff_coef"]
+            except KeyError:
+                raise ValueError("diff_coef is required for diffusion equation")
+            try:
+                self.reac_coef = properties["reac_coef"]
+            except KeyError:
+                raise ValueError("reac_coef is required for diffusion equation")
+        elif problem == "burgers":
+            try:
+                self.nu = properties["nu"]
+            except KeyError:
+                raise ValueError("nu is required for burgers equation")
+        else:
+            raise ValueError(f"Unknown problem: {problem}")
+        
         self.n_samples = n_samples
         self.Nx = Nx
         self.Nt = Nt
-        self.nu = nu
         self.control_functions = control_functions
         self.include_supervision = include_supervision
         self.fraction_supervised = fraction_supervised
@@ -61,7 +76,7 @@ class HeatEquation1DControlDataset(Dataset):
             supervised = self.include_supervision and np.random.rand() < self.fraction_supervised
 
             if supervised:
-                y = self._solve_heat_equation(u)
+                y = self._solve_pde(u)
                 self.trajectories.append(y.astype(np.float32))
                 self.supervised_mask.append(True)
             else:
@@ -126,7 +141,15 @@ class HeatEquation1DControlDataset(Dataset):
         field = mean + (field - np.mean(field)) * (np.sqrt(variance) / np.std(field))
         return field
 
-    def _solve_heat_equation(self, u):
+    def _solve_pde(self, u):
+        if self.problem == "heat":
+            return self._solve_heat(u)
+        elif self.problem == "diffusion":
+            return self._solve_diffusion_reaction(u)
+        else:
+            raise ValueError(f"Solver not implemented for problem: {self.problem}")
+
+    def _solve_heat(self, u):
         dx = self.x[1] - self.x[0]
         Nt = self.Nt
         Nx = self.Nx
@@ -142,6 +165,27 @@ class HeatEquation1DControlDataset(Dataset):
         y0 = np.zeros(Nx)
         sol = solve_ivp(rhs, [self.t[0], self.t[-1]], y0, t_eval=self.t, method='RK45')
         return sol.y
+    
+    def _solve_diffusion_reaction(self, u):
+        dx = self.x[1] - self.x[0]
+        Nx = self.Nx
+
+        def rhs(t, y):
+            y = y.reshape(-1)
+            d2y_dx2 = np.zeros_like(y)
+            
+            # Second spatial derivative with Dirichlet BC (y(0)=0, y(1)=0)
+            d2y_dx2[1:-1] = (y[2:] - 2 * y[1:-1] + y[:-2]) / dx**2
+            
+            # Boundary conditions y(0)=0, y(1)=0 explicitly enforced
+            d2y_dx2[0] = (0 - 2*y[0] + y[1]) / dx**2
+            d2y_dx2[-1] = (y[-2] - 2*y[-1] + 0) / dx**2
+            
+            return self.diff_coef * d2y_dx2 - self.reac_coef * y**2 + u
+
+        y0 = np.zeros(Nx)
+        sol = solve_ivp(rhs, [self.t[0], self.t[-1]], y0, t_eval=self.t, method='Radau')
+        return sol.y
 
 
     def _project_to_range(self, u, bound=(-3, 3)):
@@ -151,12 +195,12 @@ class HeatEquation1DControlDataset(Dataset):
             return np.random.uniform(umin, umax, size=u.shape)
         return (u - u_min) / (u_max - u_min) * (umax - umin) + umin
     
-def load_heat1d_dataset(filepath):
+def load_pde1d_dataset(filepath):
     """
     Load 1D heat equation dataset from HDF5 file and return a PyTorch Dataset object.
     """
     import h5py
-    class Heat1DLoadedDataset(torch.utils.data.Dataset):
+    class PDE1DLoadedDataset(torch.utils.data.Dataset):
         def __init__(self, path):
             with h5py.File(path, "r") as f:
                 self.controls = torch.tensor(f["controls"][:], dtype=torch.float32)    # (N, Nx)
@@ -171,7 +215,7 @@ def load_heat1d_dataset(filepath):
         def __getitem__(self, idx):
             return self.controls[idx], self.trajectories[idx], self.mask[idx]
 
-    return Heat1DLoadedDataset(filepath)
+    return PDE1DLoadedDataset(filepath)
 
 
 def custom_collate_fno1d_fn(batch):
