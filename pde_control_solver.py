@@ -181,12 +181,17 @@ class PDEControlSolver:
                 if wait >= self.config.patience:
                     print(f"Early stopping at epoch {epoch} (patience: {self.config.patience})")
                     print(f"Best {self.config.monitor}: {best_loss:.6f}")
+                    # End timing for early stopping
+                    end_time = time.time()
+                    optimization_time = end_time - start_time
+                    print(f"Optimization completed in {optimization_time:.2f} seconds")
                     return {
                         'u_optimal': best_u,
                         'y_optimal': best_y,
                         'analytics': self.analytics,
                         'stopped_early': True,
-                        'best_epoch': epoch - self.config.patience
+                        'best_epoch': epoch - self.config.patience,
+                        'optimization_time': optimization_time
                     }
             
             # Logging
@@ -553,12 +558,17 @@ class BurgersControlSolver(PDEControlSolver):
                 if wait >= self.config.patience:
                     print(f"Early stopping at epoch {epoch} (patience: {self.config.patience})")
                     print(f"Best {self.config.monitor}: {best_loss:.6f}")
+                    # End timing for early stopping
+                    end_time = time.time()
+                    optimization_time = end_time - start_time
+                    print(f"Optimization completed in {optimization_time:.2f} seconds")
                     return {
                         'u_optimal': best_u,
                         'y_optimal': best_y,
                         'analytics': self.analytics,
                         'stopped_early': True,
-                        'best_epoch': epoch - self.config.patience
+                        'best_epoch': epoch - self.config.patience,
+                        'optimization_time': optimization_time
                     }
             
             # Logging
