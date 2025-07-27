@@ -111,6 +111,8 @@ class PDEControlSolver:
     
     def compute_objective(self, y: torch.Tensor, u: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Compute objective function"""
+        # Ensure target is on the same device as y
+        target = target.to(y.device)
         final_y = y[:, :, -1]
         tracking_loss = torch.mean((final_y - target.unsqueeze(0))**2)
         control_loss = self.compute_control_loss(u)
@@ -118,6 +120,9 @@ class PDEControlSolver:
     
     def solve(self, target_profile: torch.Tensor, initial_guess: Optional[torch.Tensor] = None) -> Dict[str, Any]:
         """Solve the control problem"""
+        # Move target profile to device
+        target_profile = target_profile.to(self.device)
+        
         if initial_guess is None:
             initial_guess = torch.rand((1, self.config.nx), dtype=torch.float32, device=self.device)
         
@@ -493,6 +498,9 @@ class BurgersControlSolver(PDEControlSolver):
     
     def solve(self, target_profile: torch.Tensor, initial_guess: Optional[torch.Tensor] = None) -> Dict[str, Any]:
         """Override solve method for Burgers equation"""
+        # Move target profile to device
+        target_profile = target_profile.to(self.device)
+        
         if initial_guess is None:
             initial_guess = torch.rand((1, self.config.nx), dtype=torch.float32, device=self.device) * 1.5
         
