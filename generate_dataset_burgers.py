@@ -1,10 +1,11 @@
-from utils.data_burgers import save_burgers_dataset, load_burgers_dataset, BurgerEquationDatasetFNO, custom_collate_fno_fn
-from torch.utils.data import DataLoader
+from utils.data_burgers import Burgers1D  # assuming it's in utils/data_burgers.py
 import numpy as np
 import random
 import torch
 
-
+# ---------------------------------------------------------------------
+# Set random seeds for reproducibility
+# ---------------------------------------------------------------------
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
@@ -17,18 +18,16 @@ torch.backends.cudnn.benchmark = False
 # ---------------------------------------------------------------------
 # 1) Create the dataset in memory (expensive step happens only once)
 # ---------------------------------------------------------------------
-ds_train = BurgerEquationDatasetFNO(
-    n_samples=2000,
+ds_test = Burgers1D(
+    n_samples=100000,
     Nx=64,
-    Nt=200,
-    function_types=['sine', 'grf', 'poly', 'bump', 'fourier', 'mixed'],
-    nu_range=(0.01, 0.05),
+    Nt=100,
+    nu=0.05,    
+    smoothing= False,
+    save_path="datasets/burgers1d/",
+    fraction_supervised=0,
     include_supervision=True,
-    fraction_supervised=1,
+    name="train",
+    solver="ivp",
+    control_functions=["grf", "sine", "fourier", "step"],
 )
-
-# ---------------------------------------------------------------------
-# 2) Save it                                                           
-# ---------------------------------------------------------------------
-save_burgers_dataset(ds_train, path="datasets/burgers/", name="test")
-

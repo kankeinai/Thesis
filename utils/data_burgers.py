@@ -1,374 +1,236 @@
-# burgers_io.py
 import os
-from datetime import datetime
-import torch
 import numpy as np
+import torch
 from torch.utils.data import Dataset
+from datetime import datetime
+from scipy.ndimage import gaussian_filter1d
+from scipy.integrate import solve_ivp
+import h5py
 
-# --------------------------------------------------------------------------
-# Save
-# --------------------------------------------------------------------------
 
-def save_burgers_dataset(ds, path: str, name: str = "burgers"):
+class Burgers1D(Dataset):
     """
-    Persist a BurgerEquationDatasetFNO to disk as a .pt file.
-
-    Parameters
-    ----------
-    ds   : BurgerEquationDatasetFNO
-        The dataset object you want to freeze.
-    path : str
-        Folder where the file will be written (created if missing).
-    name : str
-        Prefix of the file; date stamp is appended automatically.
-
-    Returns
-    -------
-    str : full path of the stored .pt file.
+    Dataset for 1D inviscid Burgers' equation with time-invariant control:
+        ∂y/∂t + y ∂y/∂x = u(x)
     """
-    os.makedirs(path, exist_ok=True)
-
-    fname = f"{name}-date-{datetime.now().strftime('%Y-%m-%d')}.pt"
-    full_path = os.path.join(path, fname)
-
-    torch.save(
-        {
-            # big tensors -----------------------------------------------------------------
-            "forcings" : torch.from_numpy(ds.forcings),            # (N, Nx, Nt)
-            "targets"  : torch.from_numpy(ds.targets),             # (N, Nx, Nt)
-            "mask"     : torch.from_numpy(ds.supervised_mask),     # (N,)
-            "nu_vals"  : torch.from_numpy(ds.nu_vals),             # (N,)
-
-            # 1‑D grids (float32 keeps file small) -----------------------------------------
-            "x" : torch.tensor(ds.x, dtype=torch.float32),         # (Nx,)
-            "t" : torch.tensor(ds.t, dtype=torch.float32),         # (Nt,)
-
-            # a little meta info – handy for reproducibility -------------------------------
-            "meta" : dict(
-                Nx           = ds.Nx,
-                Nt           = ds.Nt,
-                nu_range     = (ds.nu_min, ds.nu_max),
-                domain       = (float(ds.x.min()), float(ds.x.max())),
-                time         = (float(ds.t.min()), float(ds.t.max())),
-                function_types   = tuple(ds.function_types),
-                include_supervision = bool(ds.include_supervision),
-                fraction_supervised = float(ds.fraction_supervised),
-                project      = bool(ds.project),
-                bound        = tuple(ds.bound),
-                add_noise    = bool(ds.add_noise),
-            ),
-        },
-        full_path,
-    )
-
-    print(f"[burgers_io] Saved dataset -> {full_path}")
-    return full_path
-
-
-# --------------------------------------------------------------------------
-# Load
-# --------------------------------------------------------------------------
-
-class _CachedBurgersDataset(Dataset):
-    """
-    A lightweight Dataset that wraps tensors saved by `save_burgers_dataset`.
-    """
-    def __init__(self, saved_dict):
-        # core tensors (left on CPU; DataLoader can pin‑memory / push to GPU)
-        self.f = saved_dict["forcings"].float()        # (N, Nx, Nt)
-        self.u = saved_dict["targets"].float()         # (N, Nx, Nt)
-        self.mask = saved_dict["mask"].bool()          # (N,)
-        self.nu_vals = saved_dict["nu_vals"].float()   # (N,)
-
-        # 1‑D grids
-        self.x = saved_dict["x"].float()               # (Nx,)
-        self.t = saved_dict["t"].float()               # (Nt,)
-
-        # pre‑make meshgrid once to avoid re‑allocations in __getitem__
-        X, T = torch.meshgrid(self.x, self.t, indexing="ij")
-        self.X = X                                   # (Nx, Nt)
-        self.T = T                                   # (Nx, Nt)
-
-    # ---- PyTorch Dataset API ----
-    def __len__(self):
-        return self.f.shape[0]
-
-    def __getitem__(self, idx):
-        f      = self.f[idx]              # (Nx, Nt)
-        target = self.u[idx]              # (Nx, Nt)
-        m      = self.mask[idx]           # bool
-        nu     = self.nu_vals[idx]        # scalar
-
-        # Build 4‑channel input exactly as in original dataset:
-        log_nu = torch.full_like(f, torch.log(nu))
-        inp    = torch.stack([f, self.X, self.T, log_nu], dim=-1)   # (Nx, Nt, 4)
-
-        return inp, target.unsqueeze(-1), m, nu
-
-
-def load_burgers_dataset(pt_file: str) -> Dataset:
-    """
-    Load the .pt file produced by `save_burgers_dataset` and get a PyTorch dataset.
-
-    Example
-    -------
-    >>> ds_cached = load_burgers_dataset("datasets/burgers/burgers-date-2025-07-25.pt")
-    >>> dl = DataLoader(ds_cached, batch_size=64, shuffle=True, collate_fn=custom_collate_fno_fn)
-    """
-    saved = torch.load(pt_file, map_location="cpu")
-    print(f"[burgers_io] Loaded dataset <- {pt_file}")
-    return _CachedBurgersDataset(saved)
-
-def solve_burgers_equation(
-    f, x, t, *, nu=0.01, cfl=0.4, dtype=np.float64, bc="dirichlet"
-):
-    """
-    Finite‑difference Burgers solver with **adaptive time step**:
-        dt := min(cfl*dx**2/(2*nu),  cfl*dx/max|u|)
-
-    Parameters
-    ----------
-    f   : (Nx, Nt) array, forcing term (already on same grid)
-    x,t : 1‑D grids (len = Nx, Nt)
-    nu  : viscosity
-    cfl : safety factor (0<cfl<=1)
-    dtype: float precision. Use float64 to push overflow farther away.
-    bc  : 'dirichlet' | 'periodic'
-    """
-    Nx, Nt = len(x), len(t)
-    dx     = x[1] - x[0]
-    dt_grid= t[1] - t[0]          # spacing of the *given* t‑grid
-
-    u  = np.zeros((Nx, Nt), dtype=dtype)
-    dt = dt_grid                  # start with the grid spacing
-
-    for n in range(Nt-1):
-        #-- stability limits -------------------------------------------------
-        umax   = np.max(np.abs(u[:, n]))
-        dt_diff= dx*dx / (2*nu + 1e-12)     # diffusion limit
-        dt_conv= dx / (umax + 1e-8)         # convection limit
-        dt     = min(dt, cfl*dt_diff, cfl*dt_conv)
-
-        #-- explicit FT‑CS update -------------------------------------------
-        u_next = u[:, n].copy()
-
-        # interior points
-        du_dx     = (u[2:, n] - u[:-2, n]) / (2*dx)
-        d2u_dx2   = (u[2:, n] - 2*u[1:-1, n] + u[:-2, n]) / dx**2
-        u_next[1:-1] = (
-            u[1:-1, n]
-            - dt * u[1:-1, n] * du_dx
-            + dt * nu * d2u_dx2
-            + dt * f[1:-1, n]
-        )
-
-        # boundary conditions
-        if bc == "dirichlet":
-            u_next[ 0] = 0.0
-            u_next[-1] = 0.0
-        elif bc == "periodic":
-            u_next[ 0] = u_next[-2]
-            u_next[-1] = u_next[ 1]
-
-        u[:, n+1] = u_next
-
-        # optional: overwrite the next‑step Δt in the stored t‑grid
-        t[n+1] = t[n] + dt
-
-    return u.astype(np.float32)   # cast back for training
-
-# -----------------------------------------------------------------------------
-# Gaussian random field generator (for forcing term)
-# -----------------------------------------------------------------------------
-
-def generate_gaussian_random_field_2d(Nx, Nt, length_scale_x=0.2, length_scale_t=0.2, variance=1.0):
-    kx = np.fft.fftfreq(Nx, d=1.0 / Nx)
-    kt = np.fft.fftfreq(Nt, d=1.0 / Nt)
-    KX, KT = np.meshgrid(kx, kt, indexing="ij")
-    K2 = (KX ** 2) / (length_scale_x ** 2) + (KT ** 2) / (length_scale_t ** 2)
-    psd = variance * np.exp(-K2)
-    real = np.random.normal(size=(Nx, Nt))
-    imag = np.random.normal(size=(Nx, Nt))
-    spectrum = np.sqrt(psd) * (real + 1j * imag)
-    grf = np.fft.ifft2(spectrum).real
-    grf -= grf.mean()
-    std = grf.std() if grf.std() > 1e-8 else 1.0
-    grf *= np.sqrt(variance) / std
-    return grf
-
-# -----------------------------------------------------------------------------
-# Dataset
-# -----------------------------------------------------------------------------
-
-class BurgerEquationDatasetFNO(Dataset):
-    """Physics‑informed dataset for Burgers control forcing → state mapping."""
-
     def __init__(
         self,
         n_samples: int,
         Nx: int,
         Nt: int,
-        nu_range=(0.01, 0.05),
-        domain=(0.0, 1.0),
-        time=(0.0, 1.0),
-        function_types=("sine", "grf"),
-        include_supervision=False,
-        fraction_supervised=0.2,
-        project=True,
-        bound=(-3, 3),
-        add_noise=True,
+        control_functions = ["grf", "sine", "fourier"],
+        domain_x=(0.0, 1.0),
+        domain_t=(0.0, 1.0),
+        nu: float = 0.01,
+        smoothing: bool = False,
+        include_supervision: bool = True,
+        fraction_supervised: float = 1.0,
+        project: bool = False,
+        bounds=(-3, 3),
+        solver="rk4",
+        save_path: str = None,
+        name = "train"
     ):
-        super().__init__()
+        self.n_samples = n_samples
         self.Nx = Nx
         self.Nt = Nt
+        self.control_functions = control_functions
         self.include_supervision = include_supervision
         self.fraction_supervised = fraction_supervised
-        self.function_types = function_types
         self.project = project
-        self.bound = bound
-        self.add_noise = add_noise
-        self.nu_min, self.nu_max = nu_range
+        self.solver = solver
 
-        # Grids
-        self.x = np.linspace(*domain, Nx)
-        self.t = np.linspace(*time, Nt)
-        self.X, self.T = np.meshgrid(self.x, self.t, indexing="ij")  # (Nx,Nt)
+        if project:
+            self.bounds = bounds
 
-        self.forcings = []  # f(x,t)
-        self.targets = []   # u(x,t)
+        self.smoothing = smoothing
+        self.nu = nu
+
+        self.x = np.linspace(*domain_x, Nx)
+        self.t = np.linspace(*domain_t, Nt)
+        self.dx = self.x[1] - self.x[0]
+        self.dt = self.t[1] - self.t[0]
+
+        self.controls = []
+        self.trajectories = []
         self.supervised_mask = []
-        self.nu_vals = []   # scalar ν per sample
 
         for _ in range(n_samples):
-            func_type = np.random.choice(self.function_types)
-            f = self._generate_control(func_type)
+            control_type = np.random.choice(self.control_functions)
+            u = self._generate_control(control_type)
             if self.project:
-                f = self._project_to_range(f)
-            if self.add_noise:
-                f += np.random.normal(0.0, 0.1, size=f.shape)
+                u = self._project_to_range(u)
+            
+            if self.smoothing:
+                u = gaussian_filter1d(u, sigma=2)
 
-            # draw ν for this sample (log‑uniform in practise → here uniform)
-            nu = np.random.uniform(self.nu_min, self.nu_max)
-
-            if self.include_supervision and np.random.rand() < self.fraction_supervised:
-                u = solve_burgers_equation(f, self.x, self.t, nu=nu)
+            supervised = self.include_supervision and np.random.rand() < self.fraction_supervised
+            if supervised:
+                y = self._solve_burgers(u)
+                if y.shape != (self.Nx, self.Nt):
+                    print(f"[Warning] Trajectory shape mismatch: got {y.shape}, expected ({self.Nx}, {self.Nt})")
+                self.trajectories.append(y.astype(np.float32))
                 self.supervised_mask.append(True)
             else:
-                u = np.zeros_like(f)
+                self.trajectories.append(np.zeros((Nx, Nt), dtype=np.float32))
                 self.supervised_mask.append(False)
 
-            self.forcings.append(f)
-            self.targets.append(u)
-            self.nu_vals.append(nu)
+            self.controls.append(u.astype(np.float32))
 
-        # to arrays for faster indexing
-        self.forcings = np.stack(self.forcings)
-        self.targets = np.stack(self.targets)
+        self.controls = np.stack(self.controls)
+        self.trajectories = np.stack(self.trajectories)
         self.supervised_mask = np.array(self.supervised_mask)
-        self.nu_vals = np.array(self.nu_vals)
 
-    # ------------------------------------------------------------------
-    # helper functions
-    # ------------------------------------------------------------------
+        if save_path:
+            os.makedirs(save_path, exist_ok=True)
+            fname = f"burgers_1d_dataset_{name}_{datetime.now().strftime('%Y-%m-%d')}.h5"
+            full_path = os.path.join(save_path, fname)
+            with h5py.File(full_path, "w") as f:
+                f.create_dataset("controls", data=self.controls)
+                f.create_dataset("trajectories", data=self.trajectories)
+                f.create_dataset("mask", data=self.supervised_mask)
+                f.create_dataset("x", data=self.x)
+                f.create_dataset("t", data=self.t)
+            print(f"[Burgers1D] Saved dataset -> {full_path}")
 
-    def _generate_control(self, func_type: str):
-        if func_type == 'sine':
-            A = np.random.uniform(0.5, 3.0)
-            fx = np.random.uniform(1, 5)
-            ft = np.random.uniform(0.5, 5.0)
-            phix = np.random.uniform(0, 2*np.pi)
-            phit = np.random.uniform(0, 2*np.pi)
-            return A * np.sin(2 * np.pi * fx * self.X + phix) * np.sin(2 * np.pi * ft * self.T + phit)
+    def _solve_burgers(self, u):
+            if self.solver == "rk4":
+                return self._solve_burgers_rk4(u)
+            elif self.solver == "ivp":
+                return self._solve_burgers_ivp(u)
+            else:
+                raise ValueError(f"Unknown solver: {self.solver}")
 
-        elif func_type == 'grf':
-            return generate_gaussian_random_field_2d(
-                self.Nx, self.Nt,
-                length_scale_x=np.random.uniform(0.03, 0.3),
-                length_scale_t=np.random.uniform(0.03, 0.3)
-            )
+    def _solve_burgers_rk4(self, u):
+        def rhs(y):
+            dy_dx = np.zeros_like(y)
+            d2y_dx2 = np.zeros_like(y)
 
-        elif func_type == 'step':
-            x_step = np.random.randint(1, self.Nx - 1)
-            t_step = np.random.randint(1, self.Nt - 1)
-            val = np.random.uniform(-2, 2)
-            f = np.zeros((self.Nx, self.Nt))
-            f[x_step:, t_step:] = val
-            return f
+            dy_dx[1:-1] = (y[2:] - y[:-2]) / (2 * self.dx)
+            dy_dx[0] = (y[1] - y[0]) / self.dx
+            dy_dx[-1] = (y[-1] - y[-2]) / self.dx
 
-        elif func_type == 'poly':
-            c0 = np.random.uniform(-1, 1)
-            c1 = np.random.uniform(-2, 2)
-            c2 = np.random.uniform(-1, 1)
-            c3 = np.random.uniform(-2, 2)
-            c4 = np.random.uniform(-1, 1)
-            return c0 + c1 * self.X + c2 * self.X**2 + c3 * self.T + c4 * self.T**2
+            d2y_dx2[1:-1] = (y[2:] - 2 * y[1:-1] + y[:-2]) / self.dx**2
+            d2y_dx2[0] = d2y_dx2[1]
+            d2y_dx2[-1] = d2y_dx2[-2]
 
-        elif func_type == 'linear':
-            slope_x = np.random.uniform(-2, 2)
-            slope_t = np.random.uniform(-2, 2)
-            return slope_x * self.X + slope_t * self.T
+            return -y * dy_dx + self.nu * d2y_dx2 + u
 
-        elif func_type == 'bump':
-            center_x = np.random.uniform(0.2, 0.8)
-            center_t = np.random.uniform(0.2, 0.8)
-            sigma_x = np.random.uniform(0.01, 0.1)
-            sigma_t = np.random.uniform(0.01, 0.1)
-            bump = np.exp(-((self.X - center_x)**2 / (2 * sigma_x**2) + (self.T - center_t)**2 / (2 * sigma_t**2)))
-            return np.random.uniform(1.0, 3.0) * bump
+        y = np.full(self.Nx, 0.1)
+        traj = np.zeros((self.Nx, self.Nt))
+        traj[:, 0] = y
 
-        elif func_type == 'fourier':
-            f = np.zeros_like(self.X)
-            n_terms = np.random.randint(2, 6)
-            for _ in range(n_terms):
-                kx = np.random.randint(1, 5)
-                kt = np.random.randint(1, 5)
-                A = np.random.uniform(0.5, 2.0)
-                phase_x = np.random.uniform(0, 2 * np.pi)
-                phase_t = np.random.uniform(0, 2 * np.pi)
-                f += A * np.sin(2 * np.pi * kx * self.X + phase_x) * np.sin(2 * np.pi * kt * self.T + phase_t)
-            return f
+       
+        for n in range(1, self.Nt):
+            k1 = rhs(y)
+            k2 = rhs(y + 0.5 * self.dt * k1)
+            k3 = rhs(y + 0.5 * self.dt * k2)
+            k4 = rhs(y + self.dt * k3)
+            y = y + (self.dt / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
+            traj[:, n] = y
 
-        elif func_type == 'mixed':
-            subtypes = ['sine', 'grf', 'step', 'poly', 'linear', 'bump', 'fourier']
-            components = [self._generate_control(np.random.choice(subtypes)) for _ in range(np.random.randint(2, 4))]
-            weights = np.random.uniform(0.3, 1.0, size=len(components))
-            return sum(w * c for w, c in zip(weights, components))
+        return traj
 
-    def _project_to_range(self, f):
-        umin, umax = self.bound
-        f_min, f_max = f.min(), f.max()
-        if np.isclose(f_max, f_min):
-            return np.random.uniform(umin, umax, size=f.shape)
-        return (f - f_min) / (f_max - f_min) * (umax - umin) + umin
+    def _solve_burgers_ivp(self, u):
+        def rhs(t, y):
+            dy_dx = np.zeros_like(y)
+            d2y_dx2 = np.zeros_like(y)
 
-    # ------------------------------------------------------------------
-    # PyTorch Dataset API
-    # ------------------------------------------------------------------
+            dy_dx[1:-1] = (y[2:] - y[:-2]) / (2 * self.dx)
+            dy_dx[0] = (y[1] - y[0]) / self.dx
+            dy_dx[-1] = (y[-1] - y[-2]) / self.dx
 
-    def __len__(self):
-        return len(self.forcings)
+            d2y_dx2[1:-1] = (y[2:] - 2 * y[1:-1] + y[:-2]) / self.dx**2
+            d2y_dx2[0] = d2y_dx2[1]
+            d2y_dx2[-1] = d2y_dx2[-2]
 
-    def __getitem__(self, idx):
-        f = self.forcings[idx]
-        u = self.targets[idx]
-        nu = self.nu_vals[idx]
-        mask = self.supervised_mask[idx]
+            return -y * dy_dx + self.nu * d2y_dx2 + u
 
-        # build 4‑channel input (f, x, t, log ν)
-        log_nu_channel = np.full_like(f, np.log(nu))
-        input_tensor = np.stack([f, self.X, self.T, log_nu_channel], axis=-1)  # (Nx,Nt,4)
+        y0 = np.full(self.Nx, 0.1)
+        sol = solve_ivp(rhs, [self.t[0], self.t[-1]], y0,
+                        method="LSODA", dense_output=True,
+                        max_step=self.dt)
 
-        return input_tensor, u[..., None], mask, nu  # shapes: (Nx,Nt,4), (Nx,Nt,1)
+        if not sol.success:
+            raise RuntimeError(sol.message)
 
-# -----------------------------------------------------------------------------
-# DataLoader collate
-# -----------------------------------------------------------------------------
+        return sol.sol(self.t)
 
-def custom_collate_fno_fn(batch):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    inputs, targets, masks, nus = zip(*batch)
-    inputs = torch.tensor(np.stack(inputs), dtype=torch.float32, device=device)
-    targets = torch.tensor(np.stack(targets), dtype=torch.float32, device=device)
-    masks = torch.tensor(masks, dtype=torch.bool, device=device)
-    nus = torch.tensor(nus, dtype=torch.float32, device=device)  # (B,)
-    return inputs, targets, masks, nus
+
+    def _generate_control(self, control_type):
+        if control_type == 'sine':
+            A = np.random.uniform(0.5, 6.0)
+            f = np.random.uniform(1, 5)
+            phi = np.random.uniform(0, 2 * np.pi)
+            return A * np.sin(2 * np.pi * f * self.x + phi)
+        elif control_type == 'grf':
+            u = self._generate_gaussian_random_field_fixed_1d(self.Nx, length_scale=0.2)
+            return gaussian_filter1d(u, sigma=2) if self.smoothing else u
+        elif control_type == 'fourier':
+            u = np.zeros_like(self.x)
+            for _ in range(np.random.randint(2, 5)):
+                k = np.random.randint(1, 6)
+                A = np.random.uniform(0.5, 3.0)
+                phi = np.random.uniform(0, 2 * np.pi)
+                u += A * np.sin(2 * np.pi * k * self.x + phi)
+            return u
+        elif control_type == 'step':
+            x0 = np.random.uniform(0.2, 0.8)
+            height = np.random.uniform(-2.0, 2.0)
+            return height * (self.x > x0).astype(float)
+        else:
+            raise ValueError(f"Unknown control type: {control_type}")
+
+    def _generate_gaussian_random_field_fixed_1d(self, grid_size, length_scale=0.2, mean=0, variance=1):
+        kx = np.fft.fftfreq(grid_size)
+        k_squared = kx**2
+        k_squared[0] = np.inf
+        psd = variance * np.exp(-k_squared * (length_scale**2))
+        random_field = np.fft.ifft(np.sqrt(psd) * (np.random.normal(size=grid_size) + 1j * np.random.normal(size=grid_size)))
+        field = np.real(random_field)
+        return mean + (field - np.mean(field)) * (np.sqrt(variance) / np.std(field))
+
+    def _project_to_range(self, u, ):
+        umin, umax = self.bounds
+        u_min, u_max = u.min(), u.max()
+        if np.isclose(u_max, u_min):
+            return np.random.uniform(umin, umax, size=u.shape)
+        return (u - u_min) / (u_max - u_min) * (umax - umin) + umin
+    
+
+def load_burgers1d_dataset(filepath):
+    """
+    Load 1D heat equation dataset from HDF5 file and return a PyTorch Dataset object.
+    """
+    import h5py
+    class Burgers1DLoadedDataset(torch.utils.data.Dataset):
+        def __init__(self, path):
+            with h5py.File(path, "r") as f:
+                self.controls = torch.tensor(f["controls"][:], dtype=torch.float32)    # (N, Nx)
+                self.trajectories = torch.tensor(f["trajectories"][:], dtype=torch.float32)  # (N, Nx, Nt)
+                self.mask = torch.tensor(f["mask"][:], dtype=torch.bool)
+                self.x = torch.tensor(f["x"][:], dtype=torch.float32)
+                self.t = torch.tensor(f["t"][:], dtype=torch.float32)
+
+        def __len__(self):
+            return self.controls.shape[0]
+
+        def __getitem__(self, idx):
+            return self.controls[idx], self.trajectories[idx], self.mask[idx]
+
+    return  Burgers1DLoadedDataset(filepath)
+
+
+def custom_collate_fno1d_fn(batch):
+    """
+    Collate function to batch control and trajectory samples for FNO1d.
+    """
+    u_list, y_list, m_list = zip(*batch)  # each u: (Nx,), y: (Nx, Nt)
+    u_tensor = torch.stack(u_list)        # (B, Nx)
+    x_coords = torch.linspace(0, 1, u_tensor.shape[1])
+    x_coords = x_coords.unsqueeze(0).repeat(u_tensor.shape[0], 1)
+    x_in = torch.stack([u_tensor, x_coords], dim=-1)  # (B, Nx, 2)
+    y_tensor = torch.stack(y_list).permute(0, 1, 2)    # (B, Nx, Nt)
+    m_tensor = torch.tensor(m_list).bool()
+    return x_in, y_tensor, m_tensor
+

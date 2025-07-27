@@ -176,85 +176,177 @@ def solve_singular_arc():
 # ---------------------------------------------------------------------
 # Burgers distributed‑forcing optimal control  (nx=64, nt=200)
 # ---------------------------------------------------------------------
-def solve_burgers_control():
+def solve_heat_control():
     """
-    Minimise a quadratic tracking + control‑effort cost subject to the
-    1‑D viscous Burgers PDE:
-        u_t + u u_x = ν u_xx + f
-    Boundary: u(0,t)=u(1,t)=0,  Initial: u(x,0)=0
-    Target profile at T=1:  u_d(x) = sin(π x)
+    Minimize quadratic tracking + control effort cost subject to 1D heat PDE:
+        y_t = nu y_xx + u(x,t)
+    Boundary: y(0,t) = y(1,t) = 0,
+    Initial: y(x,0) = 0,
+    Target at T=1: Gaussian bump,
+    Control: time- and space-dependent.
     """
-    # Discretisation ---------------------------------------------------
-    Nx, Nt = 64, 200
+
+    # Discretization
+    Nx, Nt = 64, 100
     Lx, T_final = 1.0, 1.0
     dx = Lx / (Nx - 1)
     dt = T_final / (Nt - 1)
     x = np.linspace(0, Lx, Nx)
     t = np.linspace(0, T_final, Nt)
 
-    ν      = 0.02        # viscosity inside training range
-    λ_ctrl = 1e-3        # control‑effort weight
+    nu = 0.01          # diffusivity
+    rho = 1e-3         # control regularization weight
 
-    u_des = np.sin(np.pi * x)     # desired terminal profile
+    # Desired terminal state: Gaussian bump
+    def y_desired(x, A=1.0, x0=0.5, sigma=0.1):
+        return A * np.exp(-((x - x0)**2) / (2 * sigma**2))
 
-    # CasADi variables -------------------------------------------------
-    U = ca.MX.sym("U", Nt, Nx)        # state  (Nt × Nx)
-    F = ca.MX.sym("F", Nt-1, Nx)      # control (Nt‑1 × Nx), piecewise‑constant
+    y_des = y_desired(x)
+    y_des_casadi = ca.DM(y_des).T    # 1 x Nx row vector
 
-    # Objective --------------------------------------------------------
-    J_track = 0.5 * ca.sumsqr(U[-1, :] - u_des)
-    J_reg   = 0.5 * λ_ctrl * dt * ca.sumsqr(F)
-    J       = J_track + J_reg
+    # CasADi variables
+    Y = ca.MX.sym("Y", Nt, Nx)       # state (Nt x Nx)
+    U = ca.MX.sym("U", Nx)      # control (Nt x Nx)
 
-    # Finite‑difference helpers ---------------------------------------
-    def laplacian_1d(u_row):
-        """Second spatial derivative with Dirichlet BCs (ghost nodes = 0)."""
+    # Objective: tracking at final time + control effort over all time and space
+    J_track = 0.5 * ca.sumsqr(Y[-1, :] - y_des_casadi)
+    J_reg = 0.5 * rho * T_final * ca.sumsqr(U)
+    J = J_track + J_reg
+
+    # Laplacian with Dirichlet BCs (ghost nodes = 0)
+    def laplacian_1d(y_row):
         return ca.hcat([
             0,
-            u_row[2:] - 2*u_row[1:-1] + u_row[:-2],
+            y_row[2:] - 2 * y_row[1:-1] + y_row[:-2],
             0
         ]) / dx**2
 
-    def advection_1d(u_row):
-        """Central‑difference u * u_x with first/last node one‑sided."""
-        dudx = ca.hcat([
-            (u_row[1]   - u_row[0])   / dx,
-            (u_row[2:]  - u_row[:-2]) / (2*dx),
-            (u_row[-1]  - u_row[-2])  / dx
-        ])
-        return u_row * dudx
+    # PDE constraints using implicit Euler:
+    # Y[k+1] - Y[k] = dt * (nu * Y_xx[k+1] + U[k])
+    g = [Y[0, :]]  # initial condition y(x,0)=0
 
-    # Dynamics constraints --------------------------------------------
-    g = [U[0, :]]                       # enforce u(x,0)=0
     for k in range(Nt - 1):
-        rhs = -advection_1d(U[k, :]) + ν * laplacian_1d(U[k, :]) + F[k, :]
-        g.append(U[k+1, :] - (U[k, :] + dt * rhs))
+        lap = laplacian_1d(Y[k + 1, :])
+        lap_col = ca.reshape(lap, Nx, 1)
+        rhs = nu * lap_col + ca.reshape(U, Nx, 1)   # time-invariant U
+        rhs_row = rhs.T
+        g.append(Y[k + 1, :] - (Y[k, :] + dt * rhs_row))
+
     g = ca.vertcat(*[ca.reshape(row, -1, 1) for row in g])
 
-    # NLP --------------------------------------------------------------
-    Z     = ca.vertcat(ca.reshape(U, -1, 1), ca.reshape(F, -1, 1))
-    prob  = {'x': Z, 'f': J, 'g': g}
-    opts  = {'ipopt.print_level': 0, 'print_time': 0}
+    # NLP setup
+    Z = ca.vertcat(ca.reshape(Y, -1, 1), U)   # (Nt*Nx*2) x 1
+    prob = {'x': Z, 'f': J, 'g': g}
+    opts = {'ipopt.print_level': 0, 'print_time': 0}
     solver = ca.nlpsol('solver', 'ipopt', prob, opts)
 
-    x0   = np.zeros(Z.shape[0])         # cold start
-    tic  = time.time()
-    sol  = solver(x0=x0, lbg=0, ubg=0)
-    toc  = time.time()
+    # Initial guess
+    x0 = np.zeros(Z.shape[0])
+
+    tic = time.time()
+    sol = solver(x0=x0, lbg=0, ubg=0)
+    toc = time.time()
 
     z_opt = np.array(sol['x']).flatten()
-    U_opt = z_opt[:Nt * Nx].reshape(Nt, Nx)
-    F_opt = z_opt[Nt * Nx:].reshape(Nt-1, Nx)
+    Y_opt = z_opt[:Nt * Nx].reshape(Nt, Nx)
+    U_opt = z_opt[Nt * Nx:] 
 
-    # -----------------------------------------------------------------
-    Path("baseline_solutions").mkdir(exist_ok=True)
-    np.savez("baseline_solutions/burgers.npz",
-             u=U_opt, f=F_opt, x=x, t=t)
+    # Save solution
+    np.savez("baseline_solutions/heat_control_time_invariant.npz",
+         y=Y_opt, u=U_opt, x=x, t=t)
 
-    print("Problem: Burgers (ν = 0.02)")
+    print("Problem: Heat equation with time-invariant control (ν = 0.01)")
+
+   
     print(f"Optimal cost: {float(sol['f']):.6f}, Solve time: {toc - tic:.2f}s")
 
     return float(sol['f']), toc - tic
+
+def solve_diffusion_control():
+    """
+    Solve optimal control for the 1D diffusion-reaction equation:
+        y_t = ν y_xx - α y^2 + u(x)
+    with initial condition y(x,0)=0 and Dirichlet BCs y(0,t)=y(1,t)=0.
+    """
+
+    # Discretization
+    Nx, Nt = 64, 100
+    Lx, T_final = 1.0, 1.0
+    dx = Lx / (Nx - 1)
+    dt = T_final / (Nt - 1)
+    x = np.linspace(0, Lx, Nx)
+    t = np.linspace(0, T_final, Nt)
+
+    nu = 0.01      # diffusivity
+    alpha = 0.01   # reaction coefficient
+    rho = 1e-3     # control regularization
+
+    # Target profile (e.g., Gaussian)
+    def y_desired(x, A=1.0, x0=0.5, sigma=0.1):
+        return A * np.exp(-((x - x0)**2) / (2 * sigma**2))
+
+    y_des = y_desired(x)
+    y_des_casadi = ca.DM(y_des).T
+
+    # CasADi variables
+    Y = ca.MX.sym("Y", Nt, Nx)  # state
+    U = ca.MX.sym("U", Nx)      # control (time-invariant)
+
+    # Objective: terminal tracking + control effort
+    J_track = 0.5 * ca.sumsqr(Y[-1, :] - y_des_casadi)
+    J_reg = 0.5 * rho * T_final * ca.sumsqr(U)
+    J = J_track + J_reg
+
+    # Laplacian with Dirichlet BCs
+    def laplacian_1d(y_row):
+        return ca.hcat([
+            0,
+            y_row[2:] - 2 * y_row[1:-1] + y_row[:-2],
+            0
+        ]) / dx**2
+
+    # PDE constraints (implicit Euler)
+    g = [Y[0, :]]  # initial condition
+
+    for k in range(Nt - 1):
+        y_next = Y[k + 1, :]
+        lap = laplacian_1d(y_next)
+        lap_col = ca.reshape(lap, Nx, 1)
+        y_sq_col = ca.reshape(y_next**2, Nx, 1)
+        u_col = ca.reshape(U, Nx, 1)
+
+        rhs = nu * lap_col - alpha * y_sq_col + u_col
+        g.append(Y[k + 1, :] - (Y[k, :] + dt * rhs.T))
+
+    g = ca.vertcat(*[ca.reshape(row, -1, 1) for row in g])
+
+    # NLP setup
+    Z = ca.vertcat(ca.reshape(Y, -1, 1), U)
+    prob = {'x': Z, 'f': J, 'g': g}
+    opts = {'ipopt.print_level': 0, 'print_time': 0}
+    solver = ca.nlpsol('solver', 'ipopt', prob, opts)
+
+    # Initial guess
+    x0 = np.zeros(Z.shape[0])
+
+    tic = time.time()
+    sol = solver(x0=x0, lbg=0, ubg=0)
+    toc = time.time()
+
+    # Extract and reshape
+    z_opt = np.array(sol['x']).flatten()
+    Y_opt = z_opt[:Nt * Nx].reshape(Nt, Nx)
+    U_opt = z_opt[Nt * Nx:]
+
+    # Save
+    Path("baseline_solutions").mkdir(exist_ok=True)
+    np.savez("baseline_solutions/diffusion_control.npz", y=Y_opt, u=U_opt, x=x, t=t)
+
+    print("Problem: Diffusion-reaction with time-invariant control")
+    print(f"Optimal cost: {float(sol['f']):.6f}, Solve time: {toc - tic:.2f}s")
+
+    return float(sol['f']), toc - tic
+
 if __name__ == "__main__":
     if __name__ == "__main__":
         print("Benchmark     | Cost        | Time (s)")
@@ -264,7 +356,7 @@ if __name__ == "__main__":
             ("Polynomial", solve_polynomial_tracking),
             ("Nonlinear", solve_nonlinear),
             ("SingularArc", solve_singular_arc),
-            ("Burgers", solve_burgers_control),  
+            ("Heat", solve_heat_control),  
         ]:
             J, t_solve = func()
             print(f"{name:13s} | {J:10.6f} | {t_solve:.4f}")

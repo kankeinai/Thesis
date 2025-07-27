@@ -38,7 +38,8 @@ class SimpleBlock1d(nn.Module):
     """
     Flexible FNO block: configurable depth, activation, dropout.
     """
-    def __init__(self, modes, width, depth=4, activation="gelu", hidden_layer=128):
+    def __init__(self, modes, width, depth=4, activation="gelu", hidden_layer=128, in_dim=2, out_dim=1):
+
         super().__init__()
         self.width = width
         # select activation
@@ -46,7 +47,7 @@ class SimpleBlock1d(nn.Module):
         self.act = nn.SiLU() if act == "silu" else nn.GELU()
 
         # lift (u, t) -> feature space
-        self.fc0 = nn.Linear(2, width)
+        self.fc0 = nn.Linear(in_dim, width)
         # spectral + 1x1 conv layers
         self.specs = nn.ModuleList([
             SpectralConv1d(width, width, modes) for _ in range(depth)
@@ -56,7 +57,7 @@ class SimpleBlock1d(nn.Module):
         ])
         # projection MLP
         self.fc1 = nn.Linear(width, hidden_layer)
-        self.fc2 = nn.Linear(hidden_layer, 1)
+        self.fc2 = nn.Linear(hidden_layer, out_dim)
 
     def forward(self, x):
         # x: [B, N, 2] concatenated (u, t)
@@ -74,19 +75,28 @@ class FNO1d(nn.Module):
     """
     1D Fourier Neural Operator with refactored block.
     """
-    def __init__(self, modes, width, depth=4, activation="gelu", hidden_layer=128):
+    def __init__(self, modes, width, depth=4, in_dim = 2, out_dim=1, activation="gelu", hidden_layer=128):
         super().__init__()
         self.conv1 = SimpleBlock1d(
             modes=modes,
             width=width,
             depth=depth,
             activation=activation,
-            hidden_layer=hidden_layer
+            hidden_layer=hidden_layer,
+            in_dim=in_dim,
+            out_dim=out_dim
         )
 
-    def forward(self, u, t):
+    def forward(self, u, t, y1 = None):
         # unchanged forward: concat forcing and time
-        x = torch.cat([u.unsqueeze(-1), t.unsqueeze(-1)], dim=-1)
+        u = u.unsqueeze(-1)  # [B, Nx, 1]
+        t = t.unsqueeze(-1)  # [B, Nx, 1]
+
+        if y1 is not None:
+            x = torch.cat([u, t, y1], dim=-1)  # [B, Nx, 2 + k]
+        else:
+            x = torch.cat([u, t], dim=-1)      # [B, Nx, 2]
+
         return self.conv1(x)
 
     def count_params(self):
