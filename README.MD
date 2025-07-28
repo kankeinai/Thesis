@@ -14,7 +14,7 @@ The repository now includes a comprehensive **PDE Control System** with:
 ## Project Structure
 
 ```
-Thesis-2/
+Thesis/
 ├── models/              # Model architectures: DeepONet, FNO, LNO
 ├── trained_models/      # Saved weights and checkpoints of trained models
 ├── utils/               # Utilities for data, training, plotting, metrics, settings, etc.
