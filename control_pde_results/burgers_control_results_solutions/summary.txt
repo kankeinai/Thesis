@@ -4,11 +4,12 @@ PDE Control Solution Summary
 Model: trained_models/burgers1d/best.pt
 Grid: 64 x 100 points
 Domain: x ∈ [0.0, 1.0], t ∈ [0.0, 1.0]
-Optimization epochs: 12935
-Final objective: 5.354595e-04
-Final physics loss: 2.432298e-05
+Optimization epochs: 13154
+Final objective: 5.356387e-04
+Final physics loss: 2.437062e-05
+Optimization time: 57.05 seconds
 Early stopping: True
-Best epoch: 12435
+Best epoch: 12654
 
 Files saved:
 - u_optimal.npy: Optimal control function

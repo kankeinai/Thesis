@@ -4,11 +4,12 @@ PDE Control Solution Summary
 Model: trained_models/diffusion1d/ckpt_ep0300.pt
 Grid: 64 x 100 points
 Domain: x ∈ [0.0, 1.0], t ∈ [0.0, 1.0]
-Optimization epochs: 8637
-Final objective: 9.298010e-04
-Final physics loss: 1.077972e-04
+Optimization epochs: 8441
+Final objective: 9.292748e-04
+Final physics loss: 1.082526e-04
+Optimization time: 36.89 seconds
 Early stopping: True
-Best epoch: 8137
+Best epoch: 7941
 
 Files saved:
 - u_optimal.npy: Optimal control function
